@@ -30,8 +30,10 @@ from steadycut.stabilization import path as P
 from steadycut.ingest.footage import clip
 from steadycut.render.reframe import render
 
-S = clip("VID_20260526_093530_00_010_012-Original/VID_20260526_093530_00_010.insv")
-MOMENT = float(os.environ.get("STEADYCUT_MOMENT", 724.5))   # top 2 s by accel deviation
+# The recording is an argument, never a constant: see main(). MOMENT is the
+# moment this study was pointed at (the top 2 s by accel deviation on the ride
+# it was written for), and it comes in the same way.
+MOMENT = float(os.environ.get("STEADYCUT_MOMENT", 0.0))
 # The bar's elevation below the horizon is NOT a constant of the mount: it moves
 # with the rider's posture. Measured -44.5 degrees at t=300 s, where h_fov 100 with
 # pitch -22 put the bar 90 percent down the frame; reading the render at t=724.5 s
@@ -52,7 +54,21 @@ def pitch_for(v_fov):
     return BAR_ELEVATION + (2.0 * BAR_FRACTION - 1.0) * (v_fov / 2.0)
 
 
-def main():
+def main(source=None, moment=None):
+    """Usage: python -m steadycut.framing.keyframe_fov <file.insv> [moment_s]
+
+    `source` is required: this studies the framing of one moment of one
+    recording, and which recording that is belongs to the caller.
+    """
+    import sys
+    if source is None:
+        if len(sys.argv) < 2:
+            print("usage: keyframe_fov.py <file.insv> [moment_s]",
+                  file=sys.stderr)
+            return 2
+        source = sys.argv[1]
+    moment = float(sys.argv[2]) if (moment is None and len(sys.argv) > 2) \
+        else (moment if moment is not None else MOMENT)
     tmp = Path(tempfile.mkdtemp())
     for name, w, h, options in CASES:
         tiles = []

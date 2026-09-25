@@ -10,7 +10,6 @@ import sys
 import numpy as np
 
 from steadycut.ingest.telemetry import read_telemetry
-from steadycut.ingest.footage import footage_root
 
 
 def welch(x, rate, seg=4.0, overlap=0.5):
@@ -111,8 +110,10 @@ def analyse(path, label, start=400.0, dur=30.0, axes=("yaw", "pitch", "roll")):
 
 
 if __name__ == "__main__":
-    base = str(footage_root())
-    analyse(f"{base}/VID_20260526_093530_00_010_012-Original"
-            f"/VID_20260526_093530_00_010.insv", "MTB (May 26)")
-    analyse(f"{base}/VID_20260221_150751_00_010_012-Original"
-            f"/VID_20260221_150751_00_012.insv", "SKI (Feb 21)")
+    import sys
+    if len(sys.argv) < 2:
+        print("usage: python -m steadycut.calibration.spectra <file.insv> "
+              "[more ...]", file=sys.stderr)
+        raise SystemExit(2)
+    for path in sys.argv[1:]:
+        analyse(path, path.rsplit("/", 1)[-1])

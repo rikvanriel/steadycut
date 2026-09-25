@@ -28,22 +28,20 @@ from pathlib import Path
 import numpy as np
 
 from steadycut.stabilization import path as P
-from steadycut.ingest.footage import clip
 from steadycut.render.reframe import render
 from steadycut.ingest.telemetry import read_telemetry
 
 import cv2
 
-CLIP = "VID_20260526_093530_00_010_012-Original/VID_20260526_093530_00_010.insv"
 W, H = 1440, 1080          # 4:3, wide enough that the trunks converge measurably
 H_FOV = 120.0
 PITCH = -20.0
 
 
-def frame_at(moment):
+def frame_at(source, moment):
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "f.mp4"
-        render(clip(CLIP), out, [P.PathPoint(t=0.0, fov=H_FOV, yaw=0.0, pitch=PITCH)],
+        render(source, out, [P.PathPoint(t=0.0, fov=H_FOV, yaw=0.0, pitch=PITCH)],
                start=moment, duration=0.1, size=(W, H), preset="ultrafast")
         raw = subprocess.run(
             ["ffmpeg", "-v", "error", "-i", str(out), "-frames:v", "1",
@@ -91,10 +89,21 @@ def vertical_vanishing_point(gray, max_tilt_deg=35.0):
     return sol, len(lines), len(segs)
 
 
-def main():
-    imu = read_telemetry(str(clip(CLIP)))
-    for moment in [float(x) for x in sys.argv[1:]] or [724.5, 300.0]:
-        gray = frame_at(moment)
+def main(argv=None):
+    """Usage: python -m steadycut.framing.visual_vertical <file> <moment_s> ...
+
+    The recording is an argument: this instrument answers a question about
+    whatever file it is pointed at, so no file is named in the code.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) < 2:
+        print("usage: visual_vertical.py <file.insv> <moment_s> [moment_s ...]",
+              file=sys.stderr)
+        return 2
+    source = argv[0]
+    imu = read_telemetry(source)
+    for moment in [float(x) for x in argv[1:]]:
+        gray = frame_at(source, moment)
         vp, used, total = vertical_vanishing_point(gray)
         print(f"\nt={moment:.1f}s   h_fov {H_FOV:.0f}  view pitch {PITCH:.0f}")
         print(f"   Hough segments {total}, near-vertical accepted {used}")

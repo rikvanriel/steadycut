@@ -23,11 +23,11 @@ from steadycut.metrics import parallax
 from steadycut.stabilization import path as P
 from steadycut.render.reframe import render
 from steadycut.ingest.telemetry import read_telemetry
-from steadycut.ingest.footage import footage_root
-
-S = (f"{footage_root()}/"
-     "VID_20260526_093530_00_010_012-Original/VID_20260526_093530_00_010.insv")
+# The window this study used, as defaults for its own runs. The RECORDING is
+# not here: it is an argument, because this instrument answers a question about
+# whatever file it is pointed at.
 START, DUR, FOV, PITCH = 400.0, 5.0, 100.0, -35.0
+S = ""                      # set from the command line; see run()
 FPS = 29.97
 PX_PER_DEG_YAW = 14.2      # measured: yaw +10 deg moves content +142 px
 PX_PER_DEG_PITCH = 17.8    # measured: pitch +10 deg moves content -178 px
@@ -50,6 +50,8 @@ def drift(per_frame):
 
 
 def main():
+    if not S:
+        raise SystemExit("usage: worldlock.py <file.insv>")
     imu = read_telemetry(S)
     win = (imu.time_s >= START - 1) & (imu.time_s <= START + DUR + 1)
     t = imu.time_s[win] - START
@@ -83,5 +85,21 @@ def main():
                   f" drift {np.abs(drift(pf2)).max():6.1f} px")
 
 
-if __name__ == "__main__":
+def run(argv):
+    """Usage: python -m steadycut.framing.worldlock <file.insv>
+
+    Sets the study's source from the command line and runs its sweep.
+    """
+    global S
+    import sys
+    if len(argv) < 1:
+        print("usage: worldlock.py <file.insv>", file=sys.stderr)
+        return 2
+    S = argv[0]
     main()
+    return 0
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    _sys.exit(run(_sys.argv[1:]))
