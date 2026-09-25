@@ -29,8 +29,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--out", default=None, help="output mp4 (default: auto)")
     ap.add_argument("--tall", action="store_true",
                     help="9:16 vertical (default 4:3 landscape)")
+    ap.add_argument("--framing", default="mtb", metavar="POLICY",
+                    help="framing policy for this mount (default mtb: camera "
+                         "on the rider's helmet, bar in the bottom of frame). "
+                         "A policy decides where the subject sits and how the "
+                         "pitch is derived; the camera profile decides what "
+                         "the lens can do")
     ap.add_argument("--pitch", type=float, default=None,
-                    help="manual framing pitch (skips auto-framing)")
+                    help="manual framing pitch (skips the policy's measurement)")
     ap.add_argument("--no-2d", action="store_true",
                     help="skip the bounded 2D residual pass")
     ap.add_argument("--preset", default="medium",
@@ -102,7 +108,7 @@ def main(argv=None) -> int:
         ClipSpec, build_gyro_path, correlate, far_field_score,
         gyro_pitch_per_frame, hybrid_correct, measure_sync, plate_scale,
         render_constant, render_path, stabilize_image_only, track_far)
-    from steadycut.framing.autopitch import measure_framing
+    from steadycut.framing.policies import policy_for, policy_names
     from steadycut.ingest.cameras.registry import identify
 
     a = build_parser().parse_args(argv)
@@ -169,22 +175,38 @@ def main(argv=None) -> int:
     fov = profile.max_useful_hfov["9:16" if a.tall else "4:3"]
     size = (540, 960) if a.tall else (960, 720)
 
-    # 2. framing.
+    # 2. framing, by the policy for this mount. The policy owns the criterion
+    #    and the way the pitch is derived; --pitch overrides both.
+    policy = policy_for(a.framing)
+    if policy is None:
+        return refuse(f"no framing policy named {a.framing!r}",
+                      f"known policies: {', '.join(policy_names())}")
     if a.pitch is not None:
         pitch = a.pitch
-        cert["framing"] = {"pitch": pitch, "manual": True}
-    else:
+        cert["framing"] = {"pitch": pitch, "manual": True,
+                           "policy": policy.name, "mount": policy.mount}
+    elif policy.measure is not None:
         try:
-            pitch, edges = measure_framing(a.source, a.start,
-                                           workdir=tmp / "framing")
+            pitch, info = policy.measure(a.source, a.start, tmp / "framing")
         except Exception as exc:
-            return refuse(f"auto-framing failed ({exc})",
-                          "re-try with --pitch set by eye")
-        if all(e >= 0.999 for e in edges.values()):
-            return refuse("no dark mass found at any pitch",
-                          "re-try with --pitch set by eye")
-        cert["framing"] = {"pitch": pitch, "manual": False, "edges": edges}
-    print(f"CLI| framing pitch {pitch:.1f}")
+            return refuse(f"{policy.name} framing failed ({exc})", policy.hint)
+        if not info.get("usable", True):
+            return refuse(info.get("reason")
+                          or f"{policy.name} could not measure a framing pitch",
+                          policy.hint)
+        cert["framing"] = {"pitch": pitch, "manual": False,
+                           "policy": policy.name, "mount": policy.mount, **info}
+    elif policy.pitch is not None:
+        pitch = policy.pitch
+        cert["framing"] = {"pitch": pitch, "manual": False,
+                           "policy": policy.name, "mount": policy.mount,
+                           "note": "policy fixed pitch"}
+    else:
+        return refuse(f"{policy.name} has neither a pitch nor a way to "
+                      "measure one", policy.hint)
+    print(f"CLI| framing pitch {pitch:.1f} "
+          f"(policy {policy.name}, mount {policy.mount}, "
+          f"follows {policy.follows})")
     spec = ClipSpec(source=a.source, start=a.start, duration=a.dur,
                     framing_pitch=pitch, fov=fov, size=size, profile=profile)
 

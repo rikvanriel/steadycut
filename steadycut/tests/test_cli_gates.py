@@ -145,3 +145,25 @@ def test_image_only_runs_without_telemetry(tmp_path, capsys, monkeypatch) -> Non
     assert len(calls) == 1  # reached the 2D pass, never a telemetry refusal
     assert "image-only far bounce raw 10.00 -> corrected 5.00" \
         in capsys.readouterr().out
+
+
+def test_unknown_framing_policy_refuses_with_the_known_names(
+        tmp_path, capsys, monkeypatch) -> None:
+    """A policy is chosen by name; the refusal has to say what exists."""
+    _patch_identify(monkeypatch, _ok_ident(_variant()))
+    rc = main([str(tmp_path / "x.mp4"), "--start", "0", "--dur", "1",
+               "--framing", "no-such-mount"])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "no framing policy named" in out and "mtb" in out
+
+
+def test_a_policy_that_cannot_measure_refuses_with_its_own_hint(
+        tmp_path, capsys, monkeypatch) -> None:
+    """The mtb policy measures the pitch; when it cannot, it says what to do."""
+    _patch_identify(monkeypatch, _ok_ident(_variant()))
+    rc = main([str(tmp_path / "x.mp4"), "--start", "0", "--dur", "1"])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "framing failed" in out
+    assert "--pitch" in out          # the policy's hint, not a generic refusal

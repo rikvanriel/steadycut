@@ -34,6 +34,11 @@ class ClipSpec:
     `profile` is the camera model's profile when known; every stage that needs
     a camera constant (axis map, lens geometry) reads it from here, so the X4
     is not baked into the stages themselves.
+
+    `framing_pitch`'s default is a placeholder for tests and synthetic specs,
+    NOT a production framing: the pitch is measured per recording by the
+    framing policy for the mount (steadycut.framing.policies) and must never be
+    carried across rides.
     """
     source: str | Path
     start: float
