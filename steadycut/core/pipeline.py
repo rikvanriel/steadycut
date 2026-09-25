@@ -180,9 +180,13 @@ def measure_sync(spec: ClipSpec, lags_ms=range(-200, 61, 10),
 
 
 def build_gyro_path(spec: ClipSpec, stamp_offset_ms: float = 0.0,
-                    corner_hz: float = 0.5, drift_ppm: float = 0.0,
+                    corner_hz: float = 0.15, drift_ppm: float = 0.0,
                     drift_ref_s: float = 0.0):
     """Stabilisation path for a clip: gyro correction + framing, thinned.
+
+    corner_hz 0.15 is the MEASURED production default (see correction_axes);
+    it lives here as well as on the CLI flag so that a tool calling this
+    directly evaluates production rather than a configuration nobody runs.
 
     stamp_offset_ms shifts the gyro stamps (the per-file sync calibration):
     path value at video time V uses gyro stamped V-offset... precisely, the

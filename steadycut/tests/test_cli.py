@@ -33,11 +33,17 @@ def test_non_camera_file_refuses(tmp_path: Path) -> None:
 
 
 def test_the_corner_default_is_the_validated_one() -> None:
-    """The tuning default is a measurement, so pin it.
+    """The tuning default is a measurement, so pin it in both of its homes.
 
     It was adopted because 0.15 Hz beat 0.5 Hz on every window of a
     multi-clip far-field validation; a change here should be a deliberate
-    re-measurement, not a drift back to a rounder number.
+    re-measurement, not a drift back to a rounder number. The library default
+    and the CLI default are the same value, and must move together -- a tool
+    that calls the library directly has to evaluate production.
     """
+    import inspect
+    from steadycut.core import pipeline as P
     a = build_parser().parse_args(["f.insv", "--start", "1", "--dur", "2"])
+    lib = inspect.signature(P.build_gyro_path).parameters["corner_hz"].default
     assert a.corner == 0.15
+    assert lib == a.corner
