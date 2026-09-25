@@ -1,0 +1,20 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# renders and analysis artifacts (instruments write these freely)
+*.mp4
+*.png
+*.cert.json
+*.npy
+
+# editor
+*.swp
+
+# exploratory instruments kept out of the repo
+experiments/

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steadycut"
+version = "0.1.0"
+description = "Free & open-source action-cam editor: gyro-stabilised reframing of 360 and action-camera footage"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Rik van Riel" }]
+keywords = ["action-cam", "360-video", "stabilization", "gyro", "reframe", "insta360"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
+    # 0.3.x is the family validated against camera-original footage; wheels
+    # exist only for CPython <=3.12, which caps the supported Python range
+    # until upstream ships newer ones. Any other version needs the
+    # real-footage battery re-run before it is allowed here.
+    "telemetry-parser>=0.3.0,<0.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+steadycut = "steadycut.steadycut:main"
+
+[project.urls]
+Homepage = "https://github.com/rikvanriel/steadycut"
+
+[tool.setuptools.packages.find]
+include = ["steadycut*"]
