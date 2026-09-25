@@ -34,6 +34,7 @@ def track(video):
     matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     prev_kp, prev_ds = None, None
     traj = []  # (dx, dy, dtheta_deg, inliers)
+    seen_first = False
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -42,7 +43,21 @@ def track(video):
             frame = cv2.resize(frame, (W, H))
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         kp, ds = orb.detectAndCompute(img, m)
-        if prev_kp is None or ds is None or prev_ds is None or len(kp) < 12 or len(prev_kp) < 12:
+        if not seen_first:
+            # The first frame has no preceding interval, so there is nothing to
+            # measure yet -- and no row to emit. This must be an explicit flag:
+            # a featureless frame yields ds=None, so testing prev_ds for None
+            # would treat the frame AFTER it as a new first frame and drop a
+            # second row.
+            seen_first = True
+            prev_kp, prev_ds = kp, ds
+            continue
+        if ds is None or len(kp) < 12 or len(prev_kp) < 12:
+            # One row per INTERVAL, always. A frame with too few features to
+            # match still gets a row (zero motion), because dropping it would
+            # shift every later correction one frame against its frame -- and a
+            # correction one frame late injects motion instead of removing it.
+            traj.append((0.0, 0.0, 0.0, 0))
             prev_kp, prev_ds = kp, ds
             continue
         matches = matcher.match(prev_ds, ds)

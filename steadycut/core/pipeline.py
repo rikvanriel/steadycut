@@ -297,6 +297,11 @@ def warp_video(src_video: str | Path, dst_video: str | Path,
     The zoom hides the sampling borders large shifts expose (5% covers ~24px
     horizontal / ~18px vertical at 960x720); it costs field of view, stated
     here rather than hidden. fps is probed from the source when not given.
+
+    One correction per frame is an invariant, not a convenience: the tracker
+    emits one row per frame interval so that row j belongs to frame j, and this
+    check is what caught that being violated (a frame that could not be matched
+    used to drop its row, shifting every later correction one frame late).
     """
     w, h = size
     if fps is None:
