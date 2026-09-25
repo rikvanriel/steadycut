@@ -96,7 +96,7 @@ def measure_camera(source, start, ident, hint, tmp) -> dict:
 
 def main(argv=None) -> int:
     from steadycut.core.pipeline import (
-        ClipSpec, build_gyro_path, correlate, far_bounce_video,
+        ClipSpec, build_gyro_path, correlate, far_field_score,
         gyro_pitch_per_frame, hybrid_correct, measure_sync, plate_scale,
         render_constant, render_path, stabilize_image_only, track_far)
     from steadycut.framing.autopitch import measure_framing
@@ -207,35 +207,43 @@ def main(argv=None) -> int:
         return refuse(f"render failed ({exc})", "no clip claimed")
     print(f"CLI| wrote {out}")
 
-    # 5. residual certificate.
+    # 5. bounded 2D residual pass -- BEFORE the certificate, so the numbers
+    #    describe the file that is actually delivered rather than the gyro
+    #    stage underneath it. Its own track supplies the inlier count the
+    #    weak-tracking gate needs.
+    if not a.no_2d:
+        staged = tmp / "hybrid.mp4"
+        pre = hybrid_correct(out, staged, sigma=8.0, bound=12.0, zoom=1.05)
+        if float(np.median(pre.inliers)) < 150:
+            print("CLI| WARN weak tracking: skipping 2D pass, gyro clip stands")
+        else:
+            # Never warp in place: write aside, then atomically replace.
+            staged.replace(out)
+            print("CLI| 2D residual pass applied")
+
+    # 6. residual certificate, measured on the delivered file with the
+    #    validated estimator: the far field is the landscape, and it carries
+    #    TWO numbers because sway and jitter are different faults.
     traj = track_far(out)
     dy = traj.deltas[:, 1] / plate_scale(spec.fov)[1]
     pr = gyro_pitch_per_frame(a.source, a.start, len(dy),
                               axis_map=profile.axis_map)
     r = correlate(pr, dy)
-    bounced, ymean = far_bounce_video(out)
     raw = tmp / "raw.mp4"
     render_constant(spec, raw)
-    bounced_raw, _ = far_bounce_video(raw)
+    corrected_score = far_field_score(out, render_size=size)
+    raw_score = far_field_score(raw, render_size=size)
     cert["residual_r"] = r
-    cert["far_bounce"] = {"corrected": bounced, "raw": bounced_raw}
+    cert["far_field"] = {"render_size": list(size),
+                         "corrected": corrected_score, "raw": raw_score}
     print(f"CLI| residual-vs-gyro r={r:+.3f} (small = explained part removed)")
-    print(f"CLI| far bounce raw {bounced_raw:.2f} -> corrected {bounced:.2f}")
+    print(f"CLI| far field rms {raw_score['rms_px']:.2f} -> "
+          f"{corrected_score['rms_px']:.2f} px  (jitter "
+          f"{raw_score['jitter_px']:.2f} -> {corrected_score['jitter_px']:.2f})")
     if abs(r) > 0.5:
         print("CLI| WARN correction unverified: residual still gyro-locked")
 
     cert["corner_hz"] = a.corner
-
-    # 6. optional bounded 2D pass.
-    if not a.no_2d:
-        if float(np.median(traj.inliers)) < 150:
-            print("CLI| WARN weak tracking: skipping 2D pass, gyro clip stands")
-        else:
-            # Never warp in place: write aside, then atomically replace.
-            staged = tmp / "hybrid.mp4"
-            hybrid_correct(out, staged, sigma=8.0, bound=12.0, zoom=1.05)
-            staged.replace(out)
-            print("CLI| 2D residual pass applied")
     cert_path = out.with_suffix(".cert.json")
     cert_path.write_text(json.dumps(cert, indent=1, default=str))
     print(f"CLI| certificate {cert_path}")

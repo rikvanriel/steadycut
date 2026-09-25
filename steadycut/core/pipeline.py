@@ -257,14 +257,36 @@ def render_path(spec: ClipSpec, points, dst: str | Path,
     return Path(dst)
 
 
-def far_bounce_video(video: str | Path) -> tuple[float, float]:
-    """(bounce, y-mean) of the FAR box: the landscape-stability number."""
-    from steadycut.metrics import parallax
-    f = parallax.frames(str(video), 1280, 960)
-    ys = np.array([parallax.shift(parallax.crop(f[i], parallax.FAR),
-                                  parallax.crop(f[i + 1], parallax.FAR))[1]
-                   for i in range(len(f) - 1)])
-    return float(np.diff(ys).std()), float(np.abs(ys).mean())
+def far_field_motion(video: str | Path,
+                     render_size: tuple[int, int] = (960, 720),
+                     track_size: tuple[int, int] = (1280, 960)) -> np.ndarray:
+    """Per-frame FAR-field vertical motion at RENDER scale, in pixels.
+
+    The far field can only move when the camera ROTATES -- there is no parallax
+    at a hundred metres -- so this is the landscape number, and the only one a
+    rotation correction can move at all. Measured with the ORB + RANSAC
+    estimator: on foliage phase correlation reads r ~= -0.18 where this reads
+    ~= -0.9, which is why the estimator matters and not just the region.
+    """
+    traj = track_far(video)
+    return traj.deltas[:, 1] * (render_size[1] / track_size[1])
+
+
+def far_field_score(video: str | Path, **kw) -> dict:
+    """RMS and frame-to-frame jitter of the far field, in render pixels.
+
+    Two numbers because they are two faults: RMS is how far the landscape
+    moves (sway and drift), jitter is how much it shakes between frames. A
+    correction can remove one without the other, and a single blended "bounce"
+    number cannot say which happened.
+    """
+    dy = far_field_motion(video, **kw)
+    if dy.size < 2:
+        return {"rms_px": float("nan"), "jitter_px": float("nan"),
+                "frames": int(dy.size)}
+    return {"rms_px": float(np.std(dy)),
+            "jitter_px": float(np.std(np.diff(dy))),
+            "frames": int(dy.size)}
 
 
 def bounce_of_traj(traj: Traj) -> tuple[float, float]:
@@ -289,6 +311,30 @@ def residual_correction(traj: Traj, sigma: float = 8.0,
     return corr
 
 
+def align_corrections(corr: np.ndarray, n_frames: int) -> np.ndarray:
+    """One correction per frame, from a per-interval trajectory.
+
+    Correction row j belongs to frame j, so the index pairing is the property
+    to preserve -- never the length for its own sake.
+
+    The trajectory is counted through cv2 and the pixels come from ffmpeg's
+    rawvideo pipe, and on some files those two disagree by one frame at the END
+    (measured: six files agreed exactly, others differ). The frames both agree
+    on keep their own row; a surplus frame gets no correction, and a surplus
+    correction row is dropped. Padding or trimming at the head instead would
+    shift every correction one frame late against its frame, and a correction
+    one frame late injects motion rather than removing it. Any mismatch beyond
+    one frame is a real inconsistency and raises.
+    """
+    if len(corr) == n_frames:
+        return corr
+    if len(corr) == n_frames - 1:
+        return np.vstack([corr, np.zeros((1, corr.shape[1]))])
+    if len(corr) == n_frames + 1:
+        return corr[:-1]
+    raise ValueError(f"frames {n_frames} != corrections {len(corr)}")
+
+
 def warp_video(src_video: str | Path, dst_video: str | Path,
                corr: np.ndarray, size: tuple[int, int] = (960, 720),
                zoom: float = 1.05, fps: float | None = None) -> Path:
@@ -298,10 +344,11 @@ def warp_video(src_video: str | Path, dst_video: str | Path,
     horizontal / ~18px vertical at 960x720); it costs field of view, stated
     here rather than hidden. fps is probed from the source when not given.
 
-    One correction per frame is an invariant, not a convenience: the tracker
-    emits one row per frame interval so that row j belongs to frame j, and this
-    check is what caught that being violated (a frame that could not be matched
-    used to drop its row, shifting every later correction one frame late).
+    One correction per frame is an invariant rather than a convenience: the
+    tracker emits one row per frame interval so that row j belongs to frame j,
+    and the length check is what caught that being violated (a frame that could
+    not be matched used to drop its row, shifting every later correction one
+    frame late).
     """
     w, h = size
     if fps is None:
@@ -312,8 +359,7 @@ def warp_video(src_video: str | Path, dst_video: str | Path,
          "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
     n = len(raw) // (w * h * 3)
     fr = np.frombuffer(raw[:n * w * h * 3], np.uint8).reshape(n, h, w, 3)
-    if n != len(corr):
-        raise ValueError(f"frames {n} != corrections {len(corr)}")
+    corr = align_corrections(corr, n)
     enc = subprocess.Popen(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
          "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
