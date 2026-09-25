@@ -108,6 +108,7 @@ def main(argv=None) -> int:
         ClipSpec, build_gyro_path, correlate, far_field_score,
         gyro_pitch_per_frame, hybrid_correct, measure_sync, plate_scale,
         render_constant, render_path, stabilize_image_only, track_far)
+    from steadycut.framing import ladder
     from steadycut.framing.policies import policy_for, policy_names
     from steadycut.ingest.cameras.registry import identify
 
@@ -185,12 +186,13 @@ def main(argv=None) -> int:
         pitch = a.pitch
         cert["framing"] = {"pitch": pitch, "manual": True,
                            "policy": policy.name, "mount": policy.mount}
-    elif policy.measure is not None:
+    elif policy.search is not None:
         try:
-            pitch, info = policy.measure(a.source, a.start, tmp / "framing")
+            pitch, info = ladder.solve(a.source, a.start, policy.search,
+                                       workdir=tmp / "framing")
         except Exception as exc:
             return refuse(f"{policy.name} framing failed ({exc})", policy.hint)
-        if not info.get("usable", True):
+        if not info.get("usable", False):
             return refuse(info.get("reason")
                           or f"{policy.name} could not measure a framing pitch",
                           policy.hint)

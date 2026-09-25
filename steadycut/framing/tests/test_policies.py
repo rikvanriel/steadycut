@@ -19,7 +19,11 @@ def test_the_mtb_policy_is_registered_and_describes_its_mount() -> None:
     assert MTB.mount == "helmet"
     assert MTB.follows == "gaze"
     assert "bar in the bottom" in MTB.anchor
-    assert MTB.measure is not None, "the pitch is measured per recording"
+    # The pitch is derived per recording by a criterion the policy supplies,
+    # so the sweep stays mount-independent: no pitch transfers across rides.
+    assert MTB.search is not None, "the pitch is measured per recording"
+    assert MTB.search.target == 0.90
+    assert callable(MTB.search.criterion)
     assert MTB.pitch is None, "no pitch transfers across recordings"
     assert "helmet" in " ".join(MTB.occluders)
 

@@ -32,8 +32,10 @@ fpv_ski.py, ...) registering a FramingPolicy. A policy carries:
   follows      whose orientation the framing follows: the head ("gaze"), the
                direction of travel ("travel"), or nothing ("fixed")
   pitch        a fixed framing pitch, used when measuring is not possible
-  measure      the per-recording procedure that derives the pitch, or None
-  anchor       the framing criterion, in words a human can check
+  search       how the pitch is derived per recording: which feature to
+               measure, where it should land, and the ladder to sweep. None
+               means the policy has no way to derive one
+  anchor       that same criterion in words a human can check
   occluders    what the mount guarantees will be in frame, so the crop can be
                biased away from it instead of spending pixels on it
   hint         what to tell the user when the measurement is unusable
@@ -51,6 +53,28 @@ from typing import Callable
 
 
 @dataclass(frozen=True)
+class PitchSearch:
+    """How a policy derives its pitch: sweep the ladder, measure this, land here.
+
+    `criterion` is called with an (N, H, W) grey stack of rendered frames and
+    returns a position as a FRACTION OF FRAME HEIGHT, or NaN when it cannot
+    measure. Keeping it a callable rather than a name is what makes the sweep
+    mount-independent: the ladder knows nothing about helmets, wheels or ski
+    tips, it only knows how to drive a measurement and land it on a target.
+
+    `ladder` is the search range, and it is policy data because the useful
+    pitches are a property of the mount: a helmet whose subject sits in the
+    bottom of frame sweeps shallow, and a sweep that never reaches the target
+    refuses rather than clamping to an end.
+    """
+
+    criterion: Callable                # (frames) -> fraction of frame height
+    target: float                      # where that measurement should land
+    label: str                         # what is measured, for messages
+    ladder: tuple[float, ...] = (-5.0, -12.0, -19.0, -26.0)
+
+
+@dataclass(frozen=True)
 class FramingPolicy:
     """One way of framing one mount: the subject anchor and how to hold it."""
 
@@ -59,8 +83,8 @@ class FramingPolicy:
     follows: str                    # gaze | travel | fixed
     anchor: str                     # the criterion, in checkable words
     occluders: tuple[str, ...] = ()
-    pitch: float | None = None      # fixed fallback; None = must be measured
-    measure: Callable | None = None  # (source, start, workdir) -> (pitch, info)
+    pitch: float | None = None          # fixed fallback; None = must be measured
+    search: PitchSearch | None = None   # how the pitch is derived, if at all
     hint: str = "re-try with --pitch set by eye"
     notes: str = ""
     capabilities: frozenset[str] = field(default_factory=frozenset)
