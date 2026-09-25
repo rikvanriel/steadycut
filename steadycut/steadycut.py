@@ -218,11 +218,23 @@ def main(argv=None) -> int:
         staged = tmp / "hybrid.mp4"
         pre = hybrid_correct(out, staged)
         if float(np.median(pre.inliers)) < 150:
+            cert["two_d"] = {"applied": False, "reason": "weak tracking"}
             print("CLI| WARN weak tracking: skipping 2D pass, gyro clip stands")
         else:
             # Never warp in place: write aside, then atomically replace.
             staged.replace(out)
+            # Record what was actually run, read from the production defaults
+            # rather than restated: the certificate describes the delivered
+            # file, and that includes the pass that produced it.
+            import inspect
+            hy = inspect.signature(hybrid_correct).parameters
+            cert["two_d"] = {"applied": True,
+                             "sigma": hy["sigma"].default,
+                             "bound": hy["bound"].default,
+                             "zoom": hy["zoom"].default}
             print("CLI| 2D residual pass applied")
+    else:
+        cert["two_d"] = {"applied": False, "reason": "--no-2d"}
 
     # 6. residual certificate, measured on the delivered file with the
     #    validated estimator: the far field is the landscape, and it carries
