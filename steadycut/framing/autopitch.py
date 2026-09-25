@@ -18,6 +18,7 @@ Method notes, all earned the hard way:
 """
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -56,15 +57,49 @@ def solve_pitch(pitches: list[float], edges: list[float],
     return float(np.interp(target, es[order], ps[order]))
 
 
+def _workdir(workdir: str | Path | None) -> Path:
+    """A workdir that exists: the ladder renders have to have somewhere to go.
+
+    The caller is a CLI holding a fresh temp dir and a subdirectory name, so
+    the path it passes does NOT exist yet. Assuming it does is not a style
+    point: ffmpeg fails with a bare exit status and the whole framing
+    measurement refuses, which is what happened the first time the automatic
+    framing path was exercised for real.
+    """
+    tmp = Path(workdir) if workdir else Path(tempfile.mkdtemp())
+    tmp.mkdir(parents=True, exist_ok=True)
+    return tmp
+
+
+def brackets(edges, target: float = EDGE_TARGET) -> bool:
+    """Did the ladder actually straddle the target?
+
+    solve_pitch returns the nearest END when it did not, which is a pitch that
+    does not satisfy the criterion at all -- so a caller that only checks for
+    "an edge was found" cannot tell a solved pitch from a failed one. On one
+    real window the edges ran 0.5717 (pitch -26) to 0.7778 (pitch -5), the
+    target 0.90 was never reached, and the solver returned -5.0 as if it had
+    solved something.
+    """
+    es = list(edges.values()) if isinstance(edges, dict) else list(edges)
+    if not es:
+        return False
+    return min(es) <= target <= max(es)
+
+
 def measure_framing(source, start: float, duration: float = 3.0,
                     pitches=(-5.0, -12.0, -19.0, -26.0),
                     workdir: str | Path | None = None):
     """Render the pitch ladder, measure each edge, solve. Returns
-    (pitch, edges-dict) -- numerics in memory, renders to a temp dir."""
+    (pitch, edges-dict) -- numerics in memory, renders to a temp dir.
+
+    The caller MUST check `brackets(edges)` before trusting the pitch: when the
+    ladder does not straddle the target, the solved value is just the nearest
+    end of the sweep and does not meet the criterion.
+    """
     import subprocess
-    import tempfile
     from steadycut.core.pipeline import ClipSpec, render_constant
-    tmp = Path(workdir) if workdir else Path(tempfile.mkdtemp())
+    tmp = _workdir(workdir)
     edges = {}
     for pitch in pitches:
         spec = ClipSpec(source=source, start=start, duration=duration,

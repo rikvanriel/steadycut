@@ -26,3 +26,33 @@ def test_solve_interpolates_and_clamps() -> None:
     assert -19.0 < got < -12.0
     assert solve_pitch([-5.0, -12.0], [0.95, 0.93], target=0.90) == -12.0
     assert solve_pitch([-5.0, -12.0], [0.80, 0.70], target=0.90) == -5.0
+
+
+def test_the_workdir_is_created_when_missing(tmp_path) -> None:
+    """The caller passes a fresh temp subdirectory, so it does NOT exist yet.
+
+    ffmpeg fails with a bare exit status when the output directory is absent,
+    which made the whole automatic framing path refuse the first time it was
+    exercised without an explicit --pitch.
+    """
+    from steadycut.framing.autopitch import _workdir
+    target = tmp_path / "framing" / "nested"
+    assert not target.exists()
+    out = _workdir(target)
+    assert out == target
+    assert out.is_dir()
+
+
+def test_brackets_tells_a_solved_ladder_from_a_clipped_one() -> None:
+    """solve_pitch returns an END of the ladder when the target is never met.
+
+    A caller that only asks "was an edge found anywhere?" cannot tell a solved
+    pitch from one nobody checked -- which is how a -5.0 pitch got reported as
+    usable on a window whose edges never got past 0.78.
+    """
+    from steadycut.framing.autopitch import brackets
+    # Real numbers from a May 26 window: 0.5717 (pitch -26) .. 0.7778 (-5).
+    assert brackets({-26.0: 0.5717, -12.0: 0.7003, -5.0: 0.7778}) is False
+    assert brackets({-26.0: 0.5717, -12.0: 0.91, -5.0: 0.7778}) is True
+    assert brackets({-5.0: 0.9999}) is False
+    assert brackets({}) is False
