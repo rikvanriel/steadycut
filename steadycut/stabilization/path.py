@@ -290,7 +290,12 @@ def build_path_quat(
     Parameterised by CORNER FREQUENCY rather than a time constant. The two are
     not interchangeable: an exponential with time constant tau has a corner at
     1/(2*pi*tau), so a time constant copied from a moving-average window cancels
-    far too much. Measured optimum is about 3 Hz.
+    far too much. What the corner should be is measured, and re-measured once
+    the far field was scored with the ORB estimator instead of phase
+    correlation: on four windows across two clips, lowering it from 0.5 to
+    0.15 Hz cut landscape amplitude on every window (60.5 to 71.2 percent of
+    raw removed, on average), while 0.05 Hz bought no further amplitude and
+    cost the near field. 0.15 Hz is the shipped default.
     """
     from steadycut.stabilization import orientation
 

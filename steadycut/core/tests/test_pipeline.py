@@ -114,3 +114,20 @@ def test_far_field_score_reports_rms_and_jitter_at_render_scale(monkeypatch) -> 
     assert score["rms_px"] == pytest.approx(float(np.std(dy)))
     assert score["jitter_px"] == pytest.approx(float(np.std(np.diff(dy))))
     assert score["frames"] == 5
+
+
+def test_the_2d_defaults_are_the_validated_ones() -> None:
+    """sigma and bound are measurements; pin them where they live.
+
+    sigma 4.0 won the far-field amplitude sweep (against 8.0 and 2.0) and
+    bound 12 px is the honesty limit the warp is clipped to. Both were chosen
+    by measuring, so a change should be a re-measurement rather than a nudge.
+    """
+    import inspect
+    from steadycut.core import pipeline as P
+    hy = inspect.signature(P.hybrid_correct).parameters
+    assert hy["sigma"].default == 4.0
+    assert hy["bound"].default == 12.0
+    assert hy["zoom"].default == 1.05
+    assert inspect.signature(
+        P.residual_correction).parameters["sigma"].default == 4.0

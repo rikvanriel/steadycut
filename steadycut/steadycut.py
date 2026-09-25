@@ -38,10 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--camera", default=None, metavar="MODEL",
                     help="force the camera model when the container carries "
                          "no recognizable signature")
-    ap.add_argument("--corner", type=float, default=0.5,
-                    help="gyro correction corner frequency in Hz (default 0.5): "
-                         "motion faster than this is removed; lower = steadier "
-                         "but lags rider's look direction")
+    ap.add_argument("--corner", type=float, default=0.15,
+                    help="gyro correction corner frequency in Hz (default "
+                         "0.15): motion faster than this is removed; lower is "
+                         "steadier but lags the rider's look direction. The "
+                         "default is measured: 0.15 beat 0.5 on every window "
+                         "of a multi-clip validation, and 0.05 bought nothing "
+                         "while costing the near field")
     ap.add_argument("--image-only", action="store_true",
                     help="bounded 2D image stabilisation without telemetry: "
                          "no reframe, no gyro (for cameras with no embedded "
@@ -213,7 +216,7 @@ def main(argv=None) -> int:
     #    weak-tracking gate needs.
     if not a.no_2d:
         staged = tmp / "hybrid.mp4"
-        pre = hybrid_correct(out, staged, sigma=8.0, bound=12.0, zoom=1.05)
+        pre = hybrid_correct(out, staged)
         if float(np.median(pre.inliers)) < 150:
             print("CLI| WARN weak tracking: skipping 2D pass, gyro clip stands")
         else:

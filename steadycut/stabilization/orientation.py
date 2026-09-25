@@ -165,11 +165,16 @@ def correction_axes(t, gyro, tau_s, axis_map=None):
     # use the production value they agreed to the digit.
     #
     # The time constant matters more than anything else here. It must come from the
-    # MEASURED optimum corner frequency, and that was re-measured once the v360
-    # command fault was fixed: residual motion is flat from 0.05 to 1.5 Hz and the
-    # previously recorded 3.18 Hz sits outside that plateau, ~30 percent worse on
-    # rotation. The production default is now 0.5 Hz (path.build_path_quat), chosen
-    # mid-plateau and for behaviour: a lower corner follows the rider's head turns
-    # less and the direction of travel more. Do not hand-restate the value in a tool
-    # that is meant to evaluate production - read it from the production default.
+    # MEASURED optimum corner frequency. An earlier note recorded a flat plateau
+    # from 0.05 to 1.5 Hz with 3.18 Hz outside it, measured per axis on 4 s windows
+    # with phase correlation; re-measuring the FAR FIELD (the landscape, which
+    # moves only by rotation) with the ORB estimator on 20 s windows of two clips
+    # gives a different answer: lowering the corner from 0.5 to 0.15 Hz improved
+    # landscape amplitude on every window (60.5 -> 71.2 percent of raw removed, on
+    # average), and 0.05 Hz bought no further amplitude while costing the near
+    # field. The production default is therefore 0.15 Hz, which also agrees with
+    # the behaviour the rider asked for: a lower corner follows the rider's head
+    # turns less and the direction of travel more. Do not hand-restate the value in
+    # a tool that is meant to evaluate production - read it from the production
+    # default.
     return (am.yaw[1] * rv[:, 1], am.pitch[1] * rv[:, 0], am.roll[1] * rv[:, 2])

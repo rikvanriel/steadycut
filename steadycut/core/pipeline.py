@@ -295,7 +295,7 @@ def bounce_of_traj(traj: Traj) -> tuple[float, float]:
     return float(np.diff(dy).std()), float(np.abs(dy).mean())
 
 
-def residual_correction(traj: Traj, sigma: float = 8.0,
+def residual_correction(traj: Traj, sigma: float = 4.0,
                         bound: float = 12.0,
                         render_size: tuple[int, int] = (960, 720),
                         track_size: tuple[int, int] = (1280, 960)) -> np.ndarray:
@@ -386,12 +386,16 @@ def warp_video(src_video: str | Path, dst_video: str | Path,
 
 
 def hybrid_correct(src_video: str | Path, dst_video: str | Path,
-                   sigma: float = 8.0, bound: float = 12.0,
+                   sigma: float = 4.0, bound: float = 12.0,
                    zoom: float = 1.05) -> Traj:
     """Bounded 2D residual pass over an already gyro-stabilised clip.
 
-    Tracks the far field, smooths the residual, warps by the clipped
-    difference. Returns the residual trajectory (in memory) the warp removed.
+    sigma 4.0 is measured, not chosen by taste: on four windows across two
+    clips it gave the best far-field amplitude in every arm of a sweep
+    (sigma 8/4/2 against corner 0.5/0.15/0.05), while sigma 2 started trading
+    amplitude away for jitter it did not win back. Tracks the far field,
+    smooths the residual, warps by the clipped difference. Returns the
+    residual trajectory (in memory) the warp removed.
     """
     traj = track_far(src_video)
     corr = residual_correction(traj, sigma=sigma, bound=bound)

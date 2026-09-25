@@ -30,3 +30,14 @@ def test_non_camera_file_refuses(tmp_path: Path) -> None:
                "--out", str(tmp_path / "o.mp4")])
     assert rc == 2
     assert not (tmp_path / "o.mp4").exists()  # no clip claimed
+
+
+def test_the_corner_default_is_the_validated_one() -> None:
+    """The tuning default is a measurement, so pin it.
+
+    It was adopted because 0.15 Hz beat 0.5 Hz on every window of a
+    multi-clip far-field validation; a change here should be a deliberate
+    re-measurement, not a drift back to a rounder number.
+    """
+    a = build_parser().parse_args(["f.insv", "--start", "1", "--dur", "2"])
+    assert a.corner == 0.15
