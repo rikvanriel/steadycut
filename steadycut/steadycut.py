@@ -182,10 +182,20 @@ def main(argv=None) -> int:
     if policy is None:
         return refuse(f"no framing policy named {a.framing!r}",
                       f"known policies: {', '.join(policy_names())}")
+    # A profile stores the pitch measured for THIS recording. When one is there
+    # the sweep is unnecessary; when it is absent or stale, behave as before.
+    from steadycut.core.profiles import load_for   # local: the CLI is the caller
+
+    stored = load_for(a.source)
     if a.pitch is not None:
         pitch = a.pitch
         cert["framing"] = {"pitch": pitch, "manual": True,
                            "policy": policy.name, "mount": policy.mount}
+    elif stored is not None and stored.pitch is not None:
+        pitch = stored.pitch
+        cert["framing"] = {"pitch": pitch, "manual": False, "stored": True,
+                           "policy": policy.name, "mount": policy.mount,
+                           "quality": stored.quality()}
     elif policy.search is not None:
         try:
             pitch, info = ladder.solve(a.source, a.start, policy.search,
