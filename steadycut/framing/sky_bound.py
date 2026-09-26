@@ -81,6 +81,8 @@ def bound_pitch(share, base: float, bound: float = BOUND,
     """
     if share(base) <= bound:
         return base, False
+    if share(floor) > bound:
+        return floor, True      # no downward answer: say floor, not floor + eps
     lo, hi = floor, base
     for _ in range(iters):
         mid = 0.5 * (lo + hi)
