@@ -119,14 +119,21 @@ def test_far_field_score_reports_rms_and_jitter_at_render_scale(monkeypatch) -> 
 def test_the_2d_defaults_are_the_validated_ones() -> None:
     """sigma and bound are measurements; pin them where they live.
 
-    sigma 4.0 won the far-field amplitude sweep (against 8.0 and 2.0) and
-    bound 12 px is the honesty limit the warp is clipped to. Both were chosen
-    by measuring, so a change should be a re-measurement rather than a nudge.
+    Re-measured on real trail footage, which overturned the previous value. Nine
+    windows, three rides, at 35/50/65 percent of each: the corrected-over-raw
+    far-field ratio was 0.83 at sigma 1, 0.86 at sigma 2, 0.95 at sigma 4, and
+    1.37 at the sigma 8 that image-only mode shipped. The sigma 1 setting helped
+    on 6 of 6 windows held out of the tuning set.
+
+    The old value came from a synthetic ten-frame jitter sweep. On a trail the
+    dominant tracked motion is partly the rider's own machine and swaying
+    foliage, so smoothing it hard warps the frame toward a camera path that does
+    not exist. A change should still be a re-measurement rather than a nudge.
     """
     import inspect
     from steadycut.core import pipeline as P
     hy = inspect.signature(P.hybrid_correct).parameters
-    assert hy["sigma"].default == 4.0
+    assert hy["sigma"].default == 1.0
     assert hy["bound"].default == 12.0
     assert hy["zoom"].default == 1.05
     assert inspect.signature(

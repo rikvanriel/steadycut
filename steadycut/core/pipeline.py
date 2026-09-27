@@ -395,16 +395,20 @@ def warp_video(src_video: str | Path, dst_video: str | Path,
 
 
 def hybrid_correct(src_video: str | Path, dst_video: str | Path,
-                   sigma: float = 4.0, bound: float = 12.0,
+                   sigma: float = 1.0, bound: float = 12.0,
                    zoom: float = 1.05) -> Traj:
     """Bounded 2D residual pass over an already gyro-stabilised clip.
 
-    sigma 4.0 is measured, not chosen by taste: on four windows across two
-    clips it gave the best far-field amplitude in every arm of a sweep
-    (sigma 8/4/2 against corner 0.5/0.15/0.05), while sigma 2 started trading
-    amplitude away for jitter it did not win back. Tracks the far field,
-    smooths the residual, warps by the clipped difference. Returns the
-    residual trajectory (in memory) the warp removed.
+    sigma 1.0 is measured on real trail footage, not chosen by taste. Across nine
+    windows -- three rides, at 35, 50 and 65 percent of each -- the far-field
+    residual ratio (corrected over raw) came out at 0.83 for sigma 1, 0.86 for
+    sigma 2, 0.95 for sigma 4 and 1.37 for the sigma 8 this used to ship, and the
+    sigma 1 setting helped on 6 of 6 windows held out of the tuning set. The
+    previous value was a ten-frame synthetic jitter sweep, and on a trail the
+    dominant tracked motion is partly the rider's own machine and swaying
+    foliage, so smoothing it hard warps the frame toward a camera path that does
+    not exist. Less smoothing is the correct amount here, not a retreat: the
+    pass still removes about a sixth of the residual.
     """
     traj = track_far(src_video)
     corr = residual_correction(traj, sigma=sigma, bound=bound)
@@ -414,7 +418,7 @@ def hybrid_correct(src_video: str | Path, dst_video: str | Path,
 
 def stabilize_image_only(source: str | Path, output: str | Path,
                          start: float, duration: float, *,
-                         sigma: float = 8.0, bound: float = 12.0,
+                         sigma: float = 1.0, bound: float = 12.0,
                          zoom: float = 1.05, preset: str = "ultrafast",
                          workdir: str | Path | None = None) -> dict:
     """Image-only stabilisation for footage with no usable telemetry.
