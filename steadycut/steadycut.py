@@ -284,18 +284,36 @@ def main(argv=None) -> int:
             cert["two_d"] = {"applied": False, "reason": "weak tracking"}
             print("CLI| WARN weak tracking: skipping 2D pass, gyro clip stands")
         else:
-            # Never warp in place: write aside, then move into place.
-            publish(staged, out)
-            # Record what was actually run, read from the production defaults
-            # rather than restated: the certificate describes the delivered
-            # file, and that includes the pass that produced it.
-            import inspect
-            hy = inspect.signature(hybrid_correct).parameters
-            cert["two_d"] = {"applied": True,
-                             "sigma": hy["sigma"].default,
-                             "bound": hy["bound"].default,
-                             "zoom": hy["zoom"].default}
-            print("CLI| 2D residual pass applied")
+            # The pass is not always an improvement, so it has to earn its
+            # place: measured on real windows it cut the far-field residual on
+            # six of seven, and on the seventh it more than DOUBLED the jitter
+            # while also raising the rms. So the gyro clip stands whenever the
+            # pass makes the far field worse -- judged on the delivered
+            # quantity, at the delivered size, not on the pass's own idea of
+            # its residual. Same rule the image-only path already applies.
+            gyro_score = far_field_score(out, render_size=size)
+            fixed_score = far_field_score(staged, render_size=size)
+            if fixed_score["jitter_px"] <= gyro_score["jitter_px"]:
+                # Never warp in place: write aside, then move into place.
+                publish(staged, out)
+                # Record what was actually run, read from the production
+                # defaults rather than restated: the certificate describes the
+                # delivered file, and that includes the pass that produced it.
+                import inspect
+                hy = inspect.signature(hybrid_correct).parameters
+                cert["two_d"] = {"applied": True,
+                                 "sigma": hy["sigma"].default,
+                                 "bound": hy["bound"].default,
+                                 "zoom": hy["zoom"].default,
+                                 "gyro": gyro_score, "corrected": fixed_score}
+                print("CLI| 2D residual pass applied")
+            else:
+                cert["two_d"] = {"applied": False,
+                                 "reason": "the pass made the far field worse",
+                                 "gyro": gyro_score, "corrected": fixed_score}
+                print(f"CLI| 2D pass made the far field worse "
+                      f"(jitter {gyro_score['jitter_px']:.2f} -> "
+                      f"{fixed_score['jitter_px']:.2f} px): gyro clip stands")
     else:
         cert["two_d"] = {"applied": False, "reason": "--no-2d"}
 
