@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -61,6 +63,29 @@ def build_parser() -> argparse.ArgumentParser:
 def refuse(msg: str, hint: str) -> int:
     print(f"REFUSE| {msg}\nREFUSE| {hint}")
     return 2
+
+
+def publish(staged: Path, out: Path) -> None:
+    """Put `staged` at `out`, replacing it, across filesystems too.
+
+    `os.replace` cannot cross a filesystem boundary, and this CLI stages its
+    work in the system temp directory while the footage and the output usually
+    live on a data disk -- so a bare replace failed with EINVAL ("Invalid
+    cross-device link") AFTER the clip was rendered, losing the certificate
+    and the 2D pass on every run whose output was not under /tmp. When the
+    rename cannot cross, copy the staged file beside the destination and
+    rename there: the final hop is still a rename within the destination's own
+    filesystem, so the destination is never written in place.
+    """
+    try:
+        os.replace(staged, out)
+        return
+    except OSError:
+        pass
+    beside = out.with_name(out.name + ".part")
+    shutil.copyfile(staged, beside)
+    os.replace(beside, out)
+    staged.unlink(missing_ok=True)
 
 
 def measure_camera(source, start, ident, hint, tmp) -> dict:
@@ -259,8 +284,8 @@ def main(argv=None) -> int:
             cert["two_d"] = {"applied": False, "reason": "weak tracking"}
             print("CLI| WARN weak tracking: skipping 2D pass, gyro clip stands")
         else:
-            # Never warp in place: write aside, then atomically replace.
-            staged.replace(out)
+            # Never warp in place: write aside, then move into place.
+            publish(staged, out)
             # Record what was actually run, read from the production defaults
             # rather than restated: the certificate describes the delivered
             # file, and that includes the pass that produced it.

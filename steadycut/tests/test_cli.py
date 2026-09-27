@@ -47,3 +47,61 @@ def test_the_corner_default_is_the_validated_one() -> None:
     lib = inspect.signature(P.build_gyro_path).parameters["corner_hz"].default
     assert a.corner == 0.15
     assert lib == a.corner
+
+
+def _exdev_once(monkeypatch):
+    """Make the first os.replace of the test fail as if crossing a device.
+
+    The CLI stages its work in the system temp dir while the footage and the
+    output normally live on a data disk, so this is the real case, not a
+    contrived one: an EXDEV failure ("Invalid cross-device link") on the
+    first move and a working one after.
+    """
+    import os
+    real = os.replace
+    state = {"n": 0}
+
+    def fake(src, dst):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise OSError(18, "Invalid cross-device link")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", fake)
+    return state
+
+
+def test_publish_survives_a_cross_device_move(tmp_path, monkeypatch) -> None:
+    from steadycut.steadycut import publish
+
+    staged = tmp_path / "stage" / "hybrid.mp4"
+    staged.parent.mkdir()
+    staged.write_bytes(b"stabilised bytes")
+    out = tmp_path / "deliver" / "clip.mp4"
+    out.parent.mkdir()
+
+    _exdev_once(monkeypatch)
+    publish(staged, out)
+    assert out.read_bytes() == b"stabilised bytes"      # delivered anyway
+    assert not staged.exists()                          # staged copy cleaned up
+    assert not out.with_name(out.name + ".part").exists()   # no litter
+
+
+def test_a_bare_replace_does_not_survive_it(tmp_path, monkeypatch) -> None:
+    """Control: the call publish replaces has no fallback and does raise.
+
+    Without this the test above only asserts "the bytes arrived", which a
+    degenerate implementation satisfies by never moving at all.
+    """
+    import pytest
+
+    staged = tmp_path / "stage" / "hybrid.mp4"
+    staged.parent.mkdir()
+    staged.write_bytes(b"stabilised bytes")
+    out = tmp_path / "deliver" / "clip.mp4"
+    out.parent.mkdir()
+
+    _exdev_once(monkeypatch)
+    with pytest.raises(OSError):
+        staged.replace(out)
+    assert not out.exists()
