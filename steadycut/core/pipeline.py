@@ -444,9 +444,25 @@ def stabilize_image_only(source: str | Path, output: str | Path,
     fixed = track_far(output)
     raw_bounce, _ = bounce_of_traj(traj)
     fixed_bounce, _ = bounce_of_traj(fixed)
+    # Keep the better of the two. Measured on real trail footage, from the middle
+    # of three rides at three fractions of each: the pass made the far-field
+    # residual WORSE on 9 of 9 windows, by 3 to 51 percent. The pass is tuned
+    # against a clean 5 Hz synthetic jitter, and singletrack is not that: parallax
+    # between canopy and trail, a rider in the near field, and foliage that moves
+    # for reasons unrelated to the camera.
+    #
+    # So when it does not help, deliver the raw cut rather than the degraded one.
+    # A warning is not a fallback: the previous behaviour warned and still shipped
+    # the worse file, so the default output of this mode was the bad one.
+    kept = "corrected"
+    if fixed_bounce >= raw_bounce:
+        import shutil
+        shutil.copyfile(cut, output)
+        kept = "raw"
     return {"output": Path(output),
             "raw_bounce": raw_bounce,
             "corrected_bounce": fixed_bounce,
+            "kept": kept,
             "inliers_med": float(np.median(traj.inliers))}
 
 

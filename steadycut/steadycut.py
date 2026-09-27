@@ -147,11 +147,15 @@ def main(argv=None) -> int:
             return refuse(f"image-only pass failed ({exc})", "no clip claimed")
         cert["image_only"] = {"raw_bounce": res["raw_bounce"],
                               "corrected_bounce": res["corrected_bounce"],
+                              "kept": res.get("kept", "corrected"),
                               "inliers_med": res["inliers_med"]}
         print(f"CLI| image-only far bounce raw {res['raw_bounce']:.2f} -> "
               f"corrected {res['corrected_bounce']:.2f}")
-        if res["corrected_bounce"] >= res["raw_bounce"]:
-            print("CLI| WARN the 2D pass did not beat raw on this window")
+        if res.get("kept") == "raw":
+            # The pass did not beat raw on this window, so the raw cut is what
+            # was delivered. Measured: that is 9 of 9 windows on real trail
+            # footage, so the common case, not an edge case.
+            print(f"CLI| 2D pass did not beat raw; delivering the raw cut")
         cert_path = out.with_suffix(".cert.json")
         cert_path.write_text(json.dumps(cert, indent=1, default=str))
         print(f"CLI| certificate {cert_path}")
