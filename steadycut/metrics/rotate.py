@@ -84,17 +84,25 @@ def fit_rotation(shifts: np.ndarray, centres: np.ndarray) -> float:
 
 
 def rotation_series(path, grid: int = GRID, fps: float = 29.97,
-                    method: str = "orb"):
-    """Per-frame in-plane rotation in degrees, with the patch count used."""
+                    method: str = "orb", size: tuple[int, int] | None = None):
+    """Per-frame in-plane rotation in degrees, with the patch count used.
+
+    `size` must match the clip's own aspect ratio. The default 960x540 is 16:9,
+    and a non-uniform rescale of a 4:3 clip squeezes angles in the ratio of the
+    scale factors -- about 25 percent at 960x720 -- so a roll rate measured on
+    the wrong size is not the roll rate. Pass the source size, or the reading is
+    a plausible number for the wrong quantity.
+    """
+    w, h = size if size else (960, 540)
     if method == "orb":
-        obs = frames(path)
+        obs = frames(path, w, h)
         rates = []
         for i in range(len(obs) - 1):
             got = rotation_between(obs[i], obs[i + 1])
             rates.append(got if got is not None else 0.0)
         return np.array(rates), None
 
-    f = frames(path)
+    f = frames(path, w, h)
     out, used = [], []
     for i in range(len(f) - 1):
         shifts, centres = _patches(f[i], f[i + 1], grid)

@@ -298,6 +298,39 @@ def far_field_score(video: str | Path, **kw) -> dict:
             "frames": int(dy.size)}
 
 
+def roll_score(video: str | Path) -> dict:
+    """Residual in-plane ROLL of a clip, in degrees per frame.
+
+    The certificate carried two far-field numbers -- both measures of how far
+    the LANDSCAPE translates -- and no roll at all, so the axis a viewer notices
+    first had no column: a delivered clip can bank ten degrees within five
+    seconds while the certificate reads clean, and the tuning effort then goes
+    to the axis that happens to have a number. This is the roll analogue of
+    far_field_score, on the same validated ORB estimator, so the two read
+    together.
+
+    It is the BETWEEN-FRAME rotation, not the absolute bank: a constant bank is
+    a framing property (and is what a horizon lock is for), whereas the
+    frame-to-frame rotation is the roll shake this column exists to catch. The
+    absolute bank needs a world vertical, which no render carries.
+    """
+    from steadycut.metrics.rotate import rotation_series
+    from steadycut.render.reframe import source_size
+
+    deg, _ = rotation_series(video, size=source_size(video))
+    deg = np.asarray(deg, dtype=float)
+    deg = deg[np.isfinite(deg)]
+    if deg.size < 2:
+        return {"rms_deg_per_frame": float("nan"),
+                "mean_abs_deg_per_frame": float("nan"),
+                "max_abs_deg_per_frame": float("nan"),
+                "frames": int(deg.size)}
+    return {"rms_deg_per_frame": float(deg.std()),
+            "mean_abs_deg_per_frame": float(np.abs(deg).mean()),
+            "max_abs_deg_per_frame": float(np.abs(deg).max()),
+            "frames": int(deg.size)}
+
+
 def bounce_of_traj(traj: Traj) -> tuple[float, float]:
     """(bounce, y-mean) straight from a trajectory, no video needed."""
     dy = traj.deltas[:, 1]

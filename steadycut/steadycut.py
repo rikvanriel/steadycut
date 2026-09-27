@@ -132,7 +132,8 @@ def main(argv=None) -> int:
     from steadycut.core.pipeline import (
         ClipSpec, build_gyro_path, correlate, far_field_score,
         gyro_pitch_per_frame, hybrid_correct, measure_sync, plate_scale,
-        render_constant, render_path, stabilize_image_only, track_far)
+        render_constant, render_path, roll_score, stabilize_image_only,
+        track_far)
     from steadycut.framing import ladder
     from steadycut.framing.policies import policy_for, policy_names
     from steadycut.ingest.cameras.registry import identify
@@ -332,10 +333,22 @@ def main(argv=None) -> int:
     cert["residual_r"] = r
     cert["far_field"] = {"render_size": list(size),
                          "corrected": corrected_score, "raw": raw_score}
+    # Roll gets its own column. The far-field numbers are both translation of
+    # the landscape, and a delivered clip can bank ten degrees within five
+    # seconds while they read clean -- so the one axis with no column became the
+    # one axis nobody measured. See roll_score for why it is the rate and not
+    # the absolute bank.
+    corrected_roll = roll_score(out)
+    raw_roll = roll_score(raw)
+    cert["roll"] = {"corrected": corrected_roll, "raw": raw_roll}
     print(f"CLI| residual-vs-gyro r={r:+.3f} (small = explained part removed)")
     print(f"CLI| far field rms {raw_score['rms_px']:.2f} -> "
           f"{corrected_score['rms_px']:.2f} px  (jitter "
           f"{raw_score['jitter_px']:.2f} -> {corrected_score['jitter_px']:.2f})")
+    print(f"CLI| roll rate   {raw_roll['mean_abs_deg_per_frame']:.3f} -> "
+          f"{corrected_roll['mean_abs_deg_per_frame']:.3f} deg/frame "
+          f"(rms {raw_roll['rms_deg_per_frame']:.3f} -> "
+          f"{corrected_roll['rms_deg_per_frame']:.3f})")
     if abs(r) > 0.5:
         print("CLI| WARN correction unverified: residual still gyro-locked")
 
