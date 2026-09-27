@@ -58,6 +58,16 @@ def test_quality_line_says_what_the_fit_was_worth():
     assert "12 frames" in fitted.quality() and "0.082" in fitted.quality()
 
 
+def test_quality_does_not_invent_a_cue():
+    """Found by running a real profile: fitted_on present, cue absent, and the
+    line claimed a cue fitted on zero frames. A judgeable line must not
+    overstate what was measured."""
+    p = profiles.Profile(pitch=-19.0, fitted_on={"frames": 0,
+                                                  "held_out_error": None})
+    assert p.cue is None
+    assert "pitch only" in p.quality()
+
+
 def test_the_store_holds_no_preferences(tmp_path):
     """Where the boundary should sit is a CHOICE, so it lives with the framing
     code and a per-activity override, not among a clip's measurements."""

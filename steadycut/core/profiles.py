@@ -91,7 +91,7 @@ class Profile:
 
     def quality(self) -> str:
         """One line a human can judge the profile by."""
-        if not self.fitted_on:
+        if self.cue is None:
             return "pitch only, no fitted cue"
         frames = self.fitted_on.get("frames", "?")
         err = self.fitted_on.get("held_out_error")
