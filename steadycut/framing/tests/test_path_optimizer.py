@@ -133,6 +133,65 @@ def test_report_measures_the_truth_not_the_intent():
     assert rep["max_shift"] > 0
 
 
+def test_an_unsatisfiable_bound_does_not_flatten_the_path():
+    """A bound that cannot be met at ANY pitch must not be applied at all.
+
+    Found on real footage, not by a test. A share function reading ~0.93 against
+    a 0.25 bound (a bad equirect extraction) sent every sample to the floor, and
+    the path came back CONSTANT: the gyro path discarded, no stabilisation at
+    all. The sky share still improved, so every metric that counts improvement
+    reported success. Only the largest-step measure showed it.
+
+    A projection that cannot converge must not run. Driving to the floor
+    destroys the framing without satisfying the constraint.
+    """
+    base = base_path()
+    out = solve(Constraints(base=base, times=TIMES, sky_share=lambda v: 0.93,
+                            iters=60))
+    assert out.std() > 0.5 * base.std(), (
+        f"path collapsed: std {out.std():.3f} vs base {base.std():.3f}")
+    assert np.abs(out - out.mean()).max() > 1.0, "output is a constant"
+
+
+def test_report_flags_an_unsatisfiable_bound():
+    """A bound silently skipped is the failure that happened: the render looked
+    better on every counted metric and the path was thrown away.
+
+    The diagnostics come off the SAME Constraints object solve() saw. A caller
+    that re-constructs an identical Constraints to ask for the report gets no
+    diagnostics, and report() says so instead of letting an absent key read as
+    "the bound was met".
+    """
+    base = base_path()
+    share = lambda v: 0.93                     # noqa: E731
+    c = Constraints(base=base, times=TIMES, sky_share=share, iters=60)
+    out = solve(c)
+    rep = report(c, out)
+    assert rep["unsatisfiable_samples"] == len(base)
+    assert rep["bound_satisfied"] is False
+
+    fresh = report(Constraints(base=base, times=TIMES, sky_share=share), out)
+    assert fresh["solved"] is False, "a report with no solve() must say so"
+
+
+def test_the_path_keeps_its_dynamic_range():
+    """Non-collapse for any cause, not just an unsatisfiable bound: a path that
+    varies must come back varying. This is the invariant whose absence let the
+    real-footage failure through."""
+    base = base_path()
+    out = solve(Constraints(base=base, times=TIMES, smooth_w=1.0, iters=200))
+    assert (np.abs(np.diff(out)).max()
+            > 0.5 * np.abs(np.diff(base)).max()), "the path was flattened"
+
+
+def test_a_satisfiable_bound_still_acts():
+    """The guard must not disable the bound that measured a real improvement."""
+    base = np.full(N, -19.0)
+    share = lambda v: 0.9 if v > -30.0 else 0.0     # noqa: E731
+    out = solve(Constraints(base=base, times=TIMES, sky_share=share, iters=40))
+    assert out.max() <= -30.0 + 1e-6, f"did not pull to the bound: {out.max()}"
+
+
 def test_empty_input_is_not_a_crash():
     out = solve(Constraints(base=np.array([]), times=np.array([])))
     assert len(out) == 0

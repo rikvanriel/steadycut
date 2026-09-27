@@ -97,14 +97,33 @@ def _project_composition(pitch, measured, target, v_fov=V_FOV):
 
 
 def _project_sky(pitch, share, bound=SKY_BOUND, floor=FLOOR, iters=24):
-    """One-sided: tilt DOWN only, never up. The asymmetry is measured."""
+    """One-sided: tilt DOWN only, never up. The asymmetry is measured.
+
+    A bound that CANNOT BE MET is declined, not enforced. Found on real footage:
+    a share function reading ~0.93 against a 0.25 bound sent every sample to the
+    floor, so the path came back constant -- the gyro path discarded, no
+    stabilisation at all -- while the sky share still improved and every metric
+    that counts improvement reported success.
+
+    The check is therefore whether the bound is reachable AT ALL inside
+    [floor, v]: if even the floor is over the bound, no downward pitch can satisfy
+    it, and running the search to the floor anyway just destroys the framing
+    without satisfying anything. Those samples are reported so a caller can see
+    the bound was skipped rather than met.
+    """
     if share is None:
-        return np.array(pitch, dtype=float), np.zeros(len(pitch), dtype=bool)
+        return (np.array(pitch, dtype=float), np.zeros(len(pitch), dtype=bool),
+                np.zeros(len(pitch), dtype=bool))
     out = np.array(pitch, dtype=float)
     acted = np.zeros(len(pitch), dtype=bool)
+    unreachable = np.zeros(len(pitch), dtype=bool)
     for i in range(len(out)):
         v = out[i]
         if share(v) <= bound:
+            continue
+        if share(floor) > bound:
+            # no pitch in the reachable range satisfies this
+            unreachable[i] = True
             continue
         lo, hi = floor, v
         for _ in range(iters):
@@ -115,11 +134,18 @@ def _project_sky(pitch, share, bound=SKY_BOUND, floor=FLOOR, iters=24):
                 lo = mid
         out[i] = 0.5 * (lo + hi)
         acted[i] = True
-    return out, acted
+    return out, acted, unreachable
 
 
 def solve(c: Constraints) -> np.ndarray:
     """Minimise movement + roughness subject to the constraints.
+
+    The diagnostics (whether the bound was reachable, how many samples it was
+    skipped on) are recorded on `c.report`, which `report()` reads. They are
+    also on the Constraints object rather than returned, because a caller who
+    re-constructs an identical Constraints to ask for the report would otherwise
+    get an empty dict and conclude the bound was met. `report()` warns when it
+    has no solve() diagnostics to read.
 
     Composition is an objective pull, not a projection: the observation view is
     rendered at a fixed orientation, so a measured boundary does not move when
@@ -205,27 +231,37 @@ def solve(c: Constraints) -> np.ndarray:
     seen = weight > 0
     if c.smooth_w <= 0.0:
         smoothness = None
+    unreachable_total = 0
     for _ in range(c.iters):
         p = p - c.lr * c.comp_w * weight * (p - desired)
         if (~seen).any():
             p = p - c.lr * c.move_w * (~seen) * (p - c.base)
         if smoothness is not None:
             p = p - c.lr * c.smooth_w * (p - smoothness)
-        p, _ = _project_sky(p, c.sky_share)
+        p, _, unreach = _project_sky(p, c.sky_share)
+        unreachable_total = max(unreachable_total, int(unreach.sum()))
         p = np.clip(p, FLOOR, CEIL)
+    c.report["unsatisfiable_samples"] = unreachable_total
+    c.report["bound_satisfied"] = unreachable_total == 0
     return p
 
 
 def report(c: Constraints, solved: np.ndarray) -> dict:
     """What moved, and how much each constraint was binding."""
     base = np.asarray(c.base, dtype=float)
-    out = {
+    out = dict(c.report) if c.report else {}
+    if not c.report:
+        # A report built from a Constraints that solve() never saw carries no
+        # diagnostics, and a caller reading an absent key would conclude the
+        # bound was met. Say so rather than let it pass.
+        out["solved"] = False
+    out.update({
         "samples": int(len(solved)),
         "moved_samples": int(np.sum(np.abs(solved - base) > 0.05)),
         "max_shift": float(np.max(np.abs(solved - base))) if len(solved) else 0.0,
         "rms_shift": float(np.sqrt(np.mean((solved - base) ** 2)))
         if len(solved) else 0.0,
-    }
+    })
     if len(solved) > 2:
         r_base = np.abs(np.diff(base)).mean()
         r_solved = np.abs(np.diff(solved)).mean()
