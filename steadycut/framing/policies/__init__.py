@@ -73,11 +73,13 @@ class PitchSearch:
     label: str                         # what is measured, for messages
     ladder: tuple[float, ...] = (-5.0, -12.0, -19.0, -26.0)
     # The x span, as fractions of width, that the criterion scans.  Declared here
-    # because a sweep's refusal diagnosis reads the band's brightness, and the
-    # band is the criterion's: on shaded trail footage the forest fills most of
-    # the frame, so a whole-frame median sits well above the measured threshold
-    # and the diagnosis silently stops firing.  None means "no band declared",
-    # and the diagnosis then declines rather than guessing at one.
+    # because a criterion's band is its own: on shaded trail footage the forest
+    # fills most of the frame, so a whole-frame measurement answers a different
+    # question from the one the criterion asks (measured 0519/1200: band median
+    # 87 against whole-frame 127).  Nothing ships against this field today -- the
+    # refusal diagnosis that motivated it was withdrawn, see the comment in
+    # framing/ladder.py -- but where to measure is settled independently of any
+    # threshold, and a criterion that needs its band should be able to say it.
     x_band: tuple[float, float] | None = None
 
 

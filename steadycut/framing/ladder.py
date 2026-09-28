@@ -155,11 +155,12 @@ def solve(source, start: float, search, duration: float = 3.0,
     criterion was unmeasurable at some pitch, or the ladder never straddled the
     target, and `info["reason"]` says which and by how much.
 
-    `info["shaded"]` is True when the band was dark enough that the unbracketed
-    target is an exposure problem rather than a framing one. It is a diagnosis,
-    not a licence: the sweep still refuses, because a shaded window genuinely
-    has no solution here and inventing a pitch is the failure this module exists
-    to prevent.
+    A refusal is a refusal: an unsolvable window gets no pitch, whatever the
+    cause, because inventing one is the failure this module exists to prevent.
+    It does not claim to know the cause. An `info["shaded"]` diagnosis was here
+    and was removed: its band-brightness threshold separated bracketing from
+    refusing windows 7 of 7 on seven windows and overlapped by seventeen grey
+    levels on seventeen, so the key described a cause the data does not support.
     """
     from steadycut.core.pipeline import ClipSpec, render_constant
 
