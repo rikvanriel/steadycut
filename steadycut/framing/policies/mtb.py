@@ -56,6 +56,7 @@ POLICY = register(FramingPolicy(
         criterion=dark_mass_edge,
         target=TARGET,
         label="dark-mass top edge (own helmet and jacket)",
+        x_band=BAND,
     ),
     hint="re-try with --pitch set by eye",
     capabilities=frozenset({"pitch_measured", "gaze_follow"}),

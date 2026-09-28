@@ -72,6 +72,13 @@ class PitchSearch:
     target: float                      # where that measurement should land
     label: str                         # what is measured, for messages
     ladder: tuple[float, ...] = (-5.0, -12.0, -19.0, -26.0)
+    # The x span, as fractions of width, that the criterion scans.  Declared here
+    # because a sweep's refusal diagnosis reads the band's brightness, and the
+    # band is the criterion's: on shaded trail footage the forest fills most of
+    # the frame, so a whole-frame median sits well above the measured threshold
+    # and the diagnosis silently stops firing.  None means "no band declared",
+    # and the diagnosis then declines rather than guessing at one.
+    x_band: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
