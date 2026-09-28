@@ -101,18 +101,28 @@ def measure_frames(video, w: int = MEASURE_W, h: int = MEASURE_H) -> np.ndarray:
 # read.  Guarded by framing/tests/test_empty_render.py.
 MIN_PLAUSIBLE_BYTES = 4096
 
-# Measured 2026-09-28 across 7 windows on three rides: the median brightness of a
-# criterion's own x band separates the windows where a dark-mass target is
-# reachable from the ones where it is not, 7 of 7 at a threshold of 96 grey
-# levels, with bracketing windows averaging 107 and failing windows 89.  The
-# failing windows are SHADED, and there the dark mass the criterion finds is the
-# forest floor rather than the rider, so no pitch brings it to the target.
+# MEASURED AND THEN RETRACTED. A band-brightness threshold at 96 was derived
+# here on seven windows and read as separating bracketing from refusing windows
+# 7 of 7. Widening the sample to seventeen windows across three rides, with each
+# window's own bracket verdict measured on its own renders, shows the classes
+# OVERLAP by seventeen grey levels:
 #
-# The band matters and the whole frame does not: on a shaded window the FOREST
-# fills most of the frame and lifts the whole-frame median above the threshold,
-# so measuring the whole frame silently loses the signal.  Measured 0519/1200:
-# band median 87, whole-frame median 127.  A policy states its band; without one
-# the diagnosis declines rather than guessing.
+#     bracketing: 8 windows, medians 80 90 96 96 98 104 108 115
+#     refusing:   9 windows, medians 64 66 68 73 78 84 86 88 97
+#
+# A bracketing window at 80 sits below a refusing one at 97, so no threshold
+# separates them; the chosen value scored 12 of 17 and the best available
+# threshold reached 15 of 17. The seven-window sample looked clean because none
+# of the seven sat near the boundary, which is exactly when a small sample is
+# most convincing. Shade remains a real tendency -- refusing windows are darker
+# on average -- but it does not determine the outcome, so it cannot be named as
+# the cause of a refusal. The lesson belongs with the number: the first question
+# about a threshold is the MARGIN around it, not the count of easy cases.
+#
+# The band-versus-frame result below is KEPT, because it is about where to
+# measure rather than about a cut-off: on 0519/1200 the criterion's own band
+# reads 87 while the whole frame reads 127, since forest fills the frame. A
+# whole-frame reading would miss the case it is used for.
 SHADED_BAND_MEDIAN = 96.0
 
 
@@ -121,7 +131,9 @@ def _band_median(frames, band=None) -> float:
 
     Measured in the band the criterion scans, not the whole frame: on shaded
     trail footage the forest fills most of the frame and drags a whole-frame
-    median above the threshold, which is exactly the case this needs to catch.
+    median well above the band reading.  Kept because it is the instrument a
+    future diagnosis would need, and because where to measure is settled even
+    though no cut-off on this measurement has survived validation.
     """
     if frames is None or band is None:
         return float("nan")
@@ -132,35 +144,6 @@ def _band_median(frames, band=None) -> float:
     x0, x1 = int(band[0] * w), int(band[1] * w)
     f = f[:, :, x0:x1] if x1 > x0 else f
     return float(np.median(f.astype(np.float32))) if f.size else float("nan")
-
-
-def diagnose_refusal(search, frames_by_pitch: dict) -> str | None:
-    """Explain WHY a sweep failed to bracket, when the band can tell us.
-
-    Two refusals look identical from `edges` alone and need different actions:
-    the criterion could not be measured (a canopy window, or a pitch where the
-    subject is out of frame), or it measured fine and the target was simply out
-    of reach. Measured on real footage, the second case is a SHADING problem --
-    the dark mass in a shaded window is the forest floor, not the subject -- and
-    a wider ladder cannot fix it, because the pitch that would land the target
-    there is one that points at the sky.
-
-    So when the band is dark, say that, and say that re-ranging will not help.
-    Returning None means "no better explanation than the generic one", and the
-    caller keeps the generic reason.
-    """
-    band = getattr(search, "x_band", None)
-    med = _band_median(next(iter(frames_by_pitch.values()), None), band)
-    if not np.isfinite(med):
-        return None
-    if med >= SHADED_BAND_MEDIAN:
-        return None
-    return (
-        f"the band is dark (median {med:.0f} against {SHADED_BAND_MEDIAN:.0f}), "
-        f"so the dark mass being measured is most likely shaded ground rather "
-        f"than the subject; a wider pitch ladder will not reach the target "
-        f"here, and framing in this window needs the pitch set by eye or by a "
-        f"criterion that does not depend on brightness")
 
 
 def solve(source, start: float, search, duration: float = 3.0,
@@ -206,30 +189,17 @@ def solve(source, start: float, search, duration: float = 3.0,
     finite = {p: e for p, e in edges.items() if np.isfinite(e)}
     pitch = solve_pitch(list(finite), list(finite.values()), search.target)
     straddled = brackets(edges, search.target)
-    shaded = False
-    span = ""                    # the measured range, for the reason string
     if len(finite) < len(edges):
         missing = sorted(p for p, e in edges.items() if not np.isfinite(e))
         reason = (f"the criterion ({search.label}) could not be measured at "
                   f"pitches {missing}")
     elif not straddled:
         lo, hi = min(finite.values()), max(finite.values())
-        span = (f"{lo:.2f}..{hi:.2f} of frame height against "
-                f"{search.target:.2f}")
-        why = diagnose_refusal(search, stacks)
-        shaded = why is not None
-        reason = why or (
-            f"the criterion ({search.label}) never reached its target: "
-            f"{span}, so the ladder did not bracket it")
+        reason = (f"the criterion ({search.label}) never reached its target: "
+                  f"{lo:.2f}..{hi:.2f} of frame height against "
+                  f"{search.target:.2f}, so the ladder did not bracket it")
     else:
         reason = None
-    # A diagnosis is APPENDED to the numbers, never substituted for them: the
-    # generic reason is what carries the criterion, the measured range and the
-    # target, and those are what a reader needs to judge the sweep.  Replacing it
-    # with "it is dark" would pass a message and lose the evidence.
-    if reason is not None and shaded:
-        reason += f" (criterion '{search.label}' reached {span})"
     return pitch, {"edges": edges, "bracketed": straddled,
                    "usable": not reason, "criterion": search.label,
-                   "target": search.target, "reason": reason,
-                   "shaded": shaded}
+                   "target": search.target, "reason": reason}
