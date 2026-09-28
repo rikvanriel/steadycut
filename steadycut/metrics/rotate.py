@@ -112,18 +112,6 @@ def rotation_series(path, grid: int = GRID, fps: float = 29.97,
     return deg, np.asarray(used)
 
 
-if __name__ == "__main__":
-    import sys
-
-    deg, used = rotation_series(sys.argv[1])
-    finite = deg[np.isfinite(deg)]
-    print(f"{sys.argv[1]}")
-    print(f"  patches tracked per frame: min {used.min()} max {used.max()} "
-          f"of {GRID * GRID}")
-    print(f"  rotation rate: mean {finite.mean():+.4f}  std {finite.std():.4f} "
-          f"deg/frame  (range {finite.min():+.3f}..{finite.max():+.3f})")
-
-
 def rotation_between(a: np.ndarray, b: np.ndarray) -> float | None:
     """In-plane rotation taking image `a` to image `b`, in degrees.
 
@@ -154,3 +142,31 @@ def rotation_between(a: np.ndarray, b: np.ndarray) -> float | None:
     if model is None:
         return None
     return float(np.degrees(np.arctan2(model[1, 0], model[0, 0])))
+
+
+# Last, deliberately: this block can only run once every name it uses exists,
+# and `rotation_between` is defined above it. Sitting here it used to die twice
+# over -- an AttributeError on the patch count the default estimator returns as
+# None, and a NameError if that were fixed -- so running the module printed a
+# traceback instead of a reading, which is how a latent bug survives a suite.
+if __name__ == "__main__":
+    import sys
+
+    import cv2
+
+    # Probe the clip's own size: the 16:9 default squeezes the angles of any
+    # other aspect, which is the bug the roll column exposed.
+    probe = cv2.VideoCapture(sys.argv[1])
+    size = (int(probe.get(cv2.CAP_PROP_FRAME_WIDTH)),
+            int(probe.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    probe.release()
+    deg, used = rotation_series(sys.argv[1], size=size)
+    finite = deg[np.isfinite(deg)]
+    print(f"{sys.argv[1]}  ({size[0]}x{size[1]})")
+    # `used` is the patch count and only the phase-correlation branch returns
+    # one, so the default method gives None.
+    if used is not None:
+        print(f"  patches tracked per frame: min {used.min()} max {used.max()} "
+              f"of {GRID * GRID}")
+    print(f"  rotation rate: mean {finite.mean():+.4f}  std {finite.std():.4f} "
+          f"deg/frame  (range {finite.min():+.3f}..{finite.max():+.3f})")
