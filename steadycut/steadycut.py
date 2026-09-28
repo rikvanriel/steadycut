@@ -137,6 +137,7 @@ def main(argv=None) -> int:
     from steadycut.framing import ladder
     from steadycut.framing.policies import policy_for, policy_names
     from steadycut.ingest.cameras.registry import identify
+    from steadycut.metrics.level import level_score
 
     a = build_parser().parse_args(argv)
     tmp = Path(tempfile.mkdtemp(prefix="steadycut-cli-"))
@@ -341,6 +342,12 @@ def main(argv=None) -> int:
     corrected_roll = roll_score(out)
     raw_roll = roll_score(raw)
     cert["roll"] = {"corrected": corrected_roll, "raw": raw_roll}
+    # Level gets a column too, and it is the one that says it CANNOT answer yet.
+    # Six designs for the bank were measured against renders carrying a
+    # commanded roll and all six failed, so the column publishes the far-field
+    # roll diagnostics and an explicit "not measured" rather than a small number
+    # standing where a large fault is. See steadycut/metrics/level.py.
+    cert["level"] = {"corrected": level_score(out), "raw": level_score(raw)}
     print(f"CLI| residual-vs-gyro r={r:+.3f} (small = explained part removed)")
     print(f"CLI| far field rms {raw_score['rms_px']:.2f} -> "
           f"{corrected_score['rms_px']:.2f} px  (jitter "
@@ -349,6 +356,8 @@ def main(argv=None) -> int:
           f"{corrected_roll['mean_abs_deg_per_frame']:.3f} deg/frame "
           f"(rms {raw_roll['rms_deg_per_frame']:.3f} -> "
           f"{corrected_roll['rms_deg_per_frame']:.3f})")
+    print("CLI| level       bank NOT measured (far-field roll accumulator is "
+          "not stable across framing); see cert level.why")
     if abs(r) > 0.5:
         print("CLI| WARN correction unverified: residual still gyro-locked")
 
