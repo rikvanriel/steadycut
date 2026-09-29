@@ -89,6 +89,13 @@ def measure_frames_colour(video, w: int = MEASURE_W, h: int = MEASURE_H) -> np.n
     fitted on r, g, b and texture cannot be measured on a grey stack: it would
     be handed three identical channels and learn nothing, and the failure would
     be a plausible-looking boundary rather than an error.
+
+    ffmpeg prints "deprecated pixel format used, make sure you did set range
+    correctly" on every one of these calls, because a v360 render comes out
+    full-range bt709 while rawvideo asks for limited. The decode is CORRECT --
+    checked by channel, the three means come back distinct (B 70.5, G 107.3,
+    R 110.3 on a 480x360 rung), which a mishandled range would flatten. The
+    warning is ffmpeg reporting a conversion it had to do, not a bad result.
     """
     import subprocess
     raw = subprocess.run(
