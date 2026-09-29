@@ -35,6 +35,7 @@ dev = ["pytest"]
 
 [project.scripts]
 steadycut = "steadycut.steadycut:main"
+steadycut-label = "steadycut.framing.labeller:main"
 
 [project.urls]
 Homepage = "https://github.com/rikvanriel/steadycut"

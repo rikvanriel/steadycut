@@ -42,7 +42,17 @@ import json
 import sys
 from pathlib import Path
 
-import cv2
+try:
+    import cv2
+except ModuleNotFoundError:  # pragma: no cover - environment guard
+    # This bites on the system interpreter, which has no OpenCV, and the bare
+    # "No module named 'cv2'" gives no hint that the fix is a different python.
+    sys.exit(
+        "cv2 is not installed for this interpreter.\n"
+        "Use the project's virtualenv:\n"
+        "    .venv/bin/steadycut-label ...        (preferred)\n"
+        f"or  {sys.executable} -m steadycut.framing.labeller ...")
+
 import numpy as np
 
 from steadycut.framing.ground_cue import GroundCue
@@ -145,56 +155,129 @@ def iter_frames(video, every: int = 15, limit: int | None = None):
 
 
 def label_clip(video, every: int = 15, limit: int | None = None,
-               scale: float = 1.0):
+               scale: float = 1.0, on_frame=None, on_root=None):
     """Walk a clip, collecting a boundary per frame by clicking.
 
     A thin shell over `boundary_from_points`: the window collects points and
     everything testable is above. Keys: left click adds a point, `u` undo,
-    return accept, `s` skip the frame, escape quit.
+    return accept, `s` skip, escape quit.
+
+    THE WINDOW IS TKINTER, NOT OPENCV. The obvious choice -- `cv2.namedWindow` --
+    does not work here: this project's OpenCV is a HEADLESS build, and calling it
+    fails with "the function is not implemented. Rebuild the library with
+    Windows, GTK+ or Cocoa support", which says nothing about what to do. Tk is in
+    the standard library, works on this display, and needs Pillow only to turn an
+    array into something a canvas can show.
+
+    `on_frame(index, frame, points, width, height)` may return a replacement
+    frame for display, which is the hook a proposed boundary would use to draw
+    itself for correction. Label collection is unaffected by it.
+
+    `on_root(root)` is handed the Tk window once the handlers are bound. It
+    exists so this can be driven without a human: a test schedules synthetic
+    clicks and key presses through it, which is the only way to know the window
+    works at all on a machine where nobody is going to click it.
     """
+    import tkinter as tk
+
+    from PIL import Image, ImageTk
+
     samples: list[tuple[np.ndarray, np.ndarray]] = []
-    state = {"pts": [], "frame": None, "done": False}
+    state = {"pts": [], "idx": 0, "frame": None, "done": False}
 
-    def on_mouse(event, x, y, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN:
-            state["pts"].append((x, y))
+    root = tk.Tk()
+    root.title("steadycut labeller")
+    canvas = tk.Canvas(root, bg="black")
+    canvas.pack()
+    info = tk.Label(root, text="", anchor="w")
+    info.pack(fill="x")
 
-    for idx, frame in iter_frames(video, every=every, limit=limit):
+    def redraw():
+        frame = state["frame"]
         h, w = frame.shape[:2]
-        show_w = int(w * scale)
+        shown = frame
+        if on_frame is not None:
+            shown = on_frame(state["idx"], frame, list(state["pts"]), w, h)
+        if scale != 1.0:
+            shown = cv2.resize(shown, (int(w * scale), int(h * scale)))
+        photo = ImageTk.PhotoImage(
+            Image.fromarray(cv2.cvtColor(shown, cv2.COLOR_BGR2RGB)))
+        canvas.configure(width=photo.width(), height=photo.height())
+        canvas.delete("all")
+        canvas.create_image(0, 0, image=photo, anchor="nw")
+        sx = scale
+        for px, py in state["pts"]:
+            canvas.create_oval(px * sx - 4, py * sx - 4, px * sx + 4,
+                               py * sx + 4, outline="red", width=2)
+        if len(state["pts"]) >= 2:
+            ordered = sorted(state["pts"])
+            flat = [c for px, py in ordered for c in (px * sx, py * sx)]
+            canvas.create_line(*flat, fill="lime", width=2)
+        canvas._photo = photo            # keep a reference alive
+        info.configure(
+            text=f"frame {state['idx']}   {len(state['pts'])} points   "
+                 f"click=add  u=undo  Return=accept  s=skip  Esc=quit")
+
+    def on_click(event):
+        state["pts"].append((int(event.x / scale), int(event.y / scale)))
+        redraw()
+
+    def finish(accept: bool):
+        frame = state["frame"]
+        w, h = frame.shape[1], frame.shape[0]
+        if accept:
+            b = boundary_from_points(state["pts"], w, h)
+            if usable(b):
+                samples.append((frame.copy(), b))
+            else:
+                print(f"  frame {state['idx']}: needs 2+ clicks, not labelled")
         state["pts"] = []
-        win = f"labeller frame {idx}  (click=add, u=undo, enter=accept, s=skip, esc=quit)"
-        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-        cv2.setMouseCallback(win, on_mouse)
-        while True:
-            canvas = frame.copy()
-            for px, py in state["pts"]:
-                cv2.circle(canvas, (px, py), 4, (0, 0, 255), -1)
-            if len(state["pts"]) >= 2:
-                pts = np.array(sorted(state["pts"]), dtype=np.int32)
-                cv2.polylines(canvas, [pts.reshape(-1, 1, 2)], False,
-                              (0, 255, 0), 2)
-            if scale != 1.0:
-                canvas = cv2.resize(canvas, (show_w, int(h * scale)))
-            cv2.imshow(win, canvas)
-            k = cv2.waitKey(1) & 0xFF
-            if k == KEY_QUIT:
-                state["done"] = True
-                break
-            if k == KEY_UNDO and state["pts"]:
+        if not load_next():
+            root.quit()
+
+    # ONE generator, pulled from: calling iter_frames() again would restart the
+    # clip from frame 0 every time a frame was accepted.
+    frames = iter_frames(video, every=every, limit=limit)
+
+    def load_next() -> bool:
+        try:
+            idx, frame = next(frames)
+        except StopIteration:
+            state["done"] = True
+            return False
+        state["idx"], state["frame"] = idx, frame
+        state["pts"] = []
+        redraw()
+        return True
+
+    def on_key(event):
+        k = (event.keysym or "").lower()
+        if k == "escape":
+            state["done"] = True
+            root.quit()
+        elif k == "u":
+            if state["pts"]:
                 state["pts"].pop()
-                continue
-            if k in (KEY_ACCEPT, 10, KEY_SKIP):
-                if k != KEY_SKIP:
-                    b = boundary_from_points(state["pts"], w, h)
-                    if usable(b):
-                        samples.append((frame.copy(), b))
-                    else:
-                        print(f"  frame {idx}: needs 2+ clicks, not labelled")
-                break
-        cv2.destroyWindow(win)
-        if state["done"]:
-            break
+                redraw()
+        elif k == "return" or event.keysym == "KP_Enter":
+            finish(True)
+        elif k == "s":
+            finish(False)
+
+    canvas.bind("<Button-1>", on_click)
+    root.bind("<Key>", on_key)
+    root.bind("<Escape>", on_key)
+    root.bind("<Return>", on_key)
+    root.protocol("WM_DELETE_WINDOW", root.quit)
+    if on_root is not None:
+        on_root(root, canvas, state)
+    if load_next():
+        # mainloop, not wait_window. `wait_window` waits for the window to be
+        # DESTROYED, and `quit()` does not do that, so the first version hung
+        # forever after the last frame -- with no error, and no way to tell from
+        # the outside that it had stopped.
+        root.mainloop()
+    root.destroy()
     return samples
 
 
