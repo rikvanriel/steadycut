@@ -342,7 +342,10 @@ def main(argv=None) -> int:
         description="Label ground boundaries and fit a per-recording cue.")
     ap.add_argument("video", nargs="?", type=Path, help="clip to label")
     ap.add_argument("--samples", type=Path, help="write/read labelled samples .npz")
-    ap.add_argument("--fit", type=Path, help="fit a cue from a samples .npz")
+    ap.add_argument("--fit", type=Path, nargs="+",
+                    help="fit a cue from one or more sample .npz files. The cue "
+                         "is per RECORDING, so pass every window you labelled "
+                         "and they are concatenated into one fit")
     ap.add_argument("--source", type=Path,
                     help="the source file the cue is fitted on (for the guard)")
     ap.add_argument("--profile", type=Path, help="profile JSON to write")
@@ -351,11 +354,22 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     if args.fit:
-        samples = samples_from_npz(args.fit)
+        paths = args.fit if isinstance(args.fit, list) else [args.fit]
+        # Concatenate across windows: the cue is fitted per RECORDING, not per
+        # clip, and a recording has several windows with different lighting and
+        # terrain. Fitting one window would learn that window.
+        samples = []
+        for p in paths:
+            part = samples_from_npz(p)
+            print(f"  {p}: {len(part)} labelled frames")
+            samples.extend(part)
         cue, report = fit_samples(samples, source=args.source)
-        print(f"fitted on {report['frames']} frames "
+        print(f"fitted on {report['frames']} frames from {len(paths)} file(s) "
               f"({report['train']} train, {report['held_out']} held out); "
               f"held-out error {report['held_out_error']:.4f} of frame height")
+        if args.source is None:
+            print("  note: no --source given, so nothing is recorded about what "
+                  "this was fitted on and the staleness guard stays unchecked")
         if args.profile:
             write_profile(args.profile, cue, report, source=args.source)
             print(f"  wrote {args.profile}")
