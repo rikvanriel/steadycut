@@ -81,6 +81,25 @@ def brackets(edges, target: float) -> bool:
     return min(es) <= target <= max(es)
 
 
+def measure_frames_colour(video, w: int = MEASURE_W, h: int = MEASURE_H) -> np.ndarray:
+    """BGR frames of a render, subsampled, for a criterion that needs COLOUR.
+
+    Separate from `measure_frames` rather than a flag on it, because the grey
+    path is the common one and greying is also a 3x saving on the pipe. A cue
+    fitted on r, g, b and texture cannot be measured on a grey stack: it would
+    be handed three identical channels and learn nothing, and the failure would
+    be a plausible-looking boundary rather than an error.
+    """
+    import subprocess
+    raw = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(video),
+         "-vf", f"fps={MEASURE_FPS:g},scale={w}:{h}",
+         "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+        capture_output=True, check=True).stdout
+    n = len(raw) // (w * h * 3)
+    return np.frombuffer(raw[:n * w * h * 3], np.uint8).reshape(n, h, w, 3)
+
+
 def measure_frames(video, w: int = MEASURE_W, h: int = MEASURE_H) -> np.ndarray:
     """Grey frames of a render, subsampled, for a criterion to measure."""
     import subprocess
@@ -179,7 +198,8 @@ def solve(source, start: float, search, duration: float = 3.0,
         # measurement, because a stubbed renderer writes no file at all and
         # checking before measuring would discard every rung of a unit test
         # while fixing nothing.
-        stack = measure_frames(vid)
+        stack = (measure_frames_colour(vid) if search.needs_colour
+                 else measure_frames(vid))
         if stack is None or getattr(stack, "size", 0) == 0 or (
                 vid.exists() and vid.stat().st_size < MIN_PLAUSIBLE_BYTES):
             edges[float(pitch)] = float("nan")

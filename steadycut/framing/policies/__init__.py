@@ -81,6 +81,7 @@ class PitchSearch:
     # framing/ladder.py -- but where to measure is settled independently of any
     # threshold, and a criterion that needs its band should be able to say it.
     x_band: tuple[float, float] | None = None
+    needs_colour: bool = False         # hand the criterion BGR, not grey
 
 
 @dataclass(frozen=True)
