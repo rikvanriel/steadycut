@@ -28,6 +28,12 @@ dependencies = [
     # until upstream ships newer ones. Any other version needs the
     # real-footage battery re-run before it is allowed here.
     "telemetry-parser>=0.3.0,<0.4",
+    # The routing filter for camera attitude. The reference implementation of
+    # Laidig & Seel's VQF (Information Fusion 2023), and the algorithm Gyroflow
+    # ships as its default, so it is a dependency rather than an implementation
+    # to maintain. Hand-rolling a complementary filter instead cost one session
+    # three confident mirrored sign errors, none of which raised.
+    "vqf>=2.0",
 ]
 
 [project.optional-dependencies]
