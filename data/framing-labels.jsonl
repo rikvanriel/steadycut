@@ -1,0 +1,97 @@
+# Framing labels for MTB helmet footage.
+# One JSON object per line. `labeller` is rider | vlm | none, and
+# `boundary_position_pct` is the grid reading where the rider gave
+# one, else null. Regenerate the pixels with the scripts named in
+# each row's `sheet`; the frames themselves are not tracked.
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "good maybe best near this time", "recording": "0519a", "seconds": 4.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "good framing", "recording": "0519a", "seconds": 5.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "low", "labeller": "rider", "note": "a little low", "recording": "0519a", "seconds": 1388.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "low", "labeller": "rider", "note": "a little low", "recording": "0519b", "seconds": 582.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "sideways and upside down", "recording": "0519b", "seconds": 1298.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "upside down and sideways", "recording": "0519b", "seconds": 1299.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "good framing", "recording": "0521a", "seconds": 4.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "low", "labeller": "rider", "note": "a little low but adequate", "recording": "0521a", "seconds": 140.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "low", "labeller": "rider", "note": "a little low", "recording": "0521a", "seconds": 1712.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "good framing", "recording": "0521b", "seconds": 7.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "good framing", "recording": "0521b", "seconds": 10.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "conflict": "listed as no-horizon on the position sheet and as 'perfect' on the timestamp sheet", "framing_class": "good", "labeller": "rider", "note": "perfect", "recording": "0521b", "seconds": 11.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "perfect", "recording": "0521b", "seconds": 1762.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "pointing down and sideways helmet on", "recording": "0526a", "seconds": 2.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "straight down still putting helmet on", "recording": "0526a", "seconds": 4.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "no idea what I am looking at camera inside something", "recording": "0526a", "seconds": 17.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "perfect", "recording": "0526a", "seconds": 1765.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "pointing almost straight down", "recording": "0526b", "seconds": 1.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "good framing", "recording": "0526b", "seconds": 4.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "good framing", "recording": "0526b", "seconds": 502.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "low", "labeller": "rider", "note": "a little low", "recording": "0526b", "seconds": 1493.0, "sheet": "timestamp"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "great framing, sky takes up maybe 30 percent", "recording": "0519a", "seconds": 119.0, "sheet": "pitch-anchor"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "rider called it straight up", "recording": "0519a", "seconds": 405.0, "sheet": "pitch-anchor"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "rider called it straight down", "recording": "0519b", "seconds": 63.0, "sheet": "pitch-anchor"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "rider called it straight down", "recording": "0519b", "seconds": 109.0, "sheet": "pitch-anchor"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "rider called it straight down", "recording": "0519b", "seconds": 280.0, "sheet": "pitch-anchor"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "rider called it straight down", "recording": "0519b", "seconds": 396.0, "sheet": "pitch-anchor"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "rider", "note": "rider called it straight down", "recording": "0519b", "seconds": 685.0, "sheet": "pitch-anchor"}
+{"boundary_position_pct": 40.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0519a", "seconds": 11.0, "sheet": "position"}
+{"boundary_position_pct": 20.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0519a", "seconds": 1495.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "on-target", "labeller": "rider", "note": "rider: already on target", "recording": "0521a", "seconds": -4.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "on-target", "labeller": "rider", "note": "rider: already on target", "recording": "0521a", "seconds": 1755.0, "sheet": "position"}
+{"also_labelled_at": "timestamp", "boundary_position_pct": 45.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521b", "seconds": 7.0, "sheet": "position"}
+{"boundary_position_pct": 15.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521b", "seconds": 1787.0, "sheet": "position"}
+{"boundary_position_pct": 47.5, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0526a", "seconds": 5.0, "sheet": "position"}
+{"boundary_position_pct": 0.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0526a", "seconds": 1766.0, "sheet": "position"}
+{"also_labelled_at": "timestamp", "boundary_position_pct": 45.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0519a", "seconds": 4.0, "sheet": "position"}
+{"boundary_position_pct": 35.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0519a", "seconds": 1509.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0519b", "seconds": 1318.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0519b", "seconds": 1319.0, "sheet": "position"}
+{"also_labelled_at": "position", "boundary_position_pct": 30.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521a", "seconds": -4.0, "sheet": "position"}
+{"boundary_position_pct": 5.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521a", "seconds": 1751.0, "sheet": "position"}
+{"boundary_position_pct": 25.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521b", "seconds": 17.0, "sheet": "position"}
+{"boundary_position_pct": 28.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521b", "seconds": 1800.0, "sheet": "position"}
+{"also_labelled_at": "position", "boundary_position_pct": 45.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0519a", "seconds": 4.0, "sheet": "position"}
+{"boundary_position_pct": 5.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0519a", "seconds": 1537.0, "sheet": "position"}
+{"also_labelled_at": "position", "boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0519b", "seconds": 1318.0, "sheet": "position"}
+{"also_labelled_at": "position", "boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0519b", "seconds": 1319.0, "sheet": "position"}
+{"boundary_position_pct": 30.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521a", "seconds": -3.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0521a", "seconds": 1746.0, "sheet": "position"}
+{"boundary_position_pct": 20.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521b", "seconds": 19.0, "sheet": "position"}
+{"boundary_position_pct": 30.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521b", "seconds": 1799.0, "sheet": "position"}
+{"boundary_position_pct": 40.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0519a", "seconds": 145.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "unlabelled", "labeller": "none", "note": "sampled, not judged", "recording": "0519a", "seconds": 1754.0, "sheet": "position"}
+{"also_labelled_at": "timestamp", "boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0519b", "seconds": 582.0, "sheet": "position"}
+{"also_labelled_at": "position", "boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0519b", "seconds": 1318.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "on-target", "labeller": "rider", "note": "rider: already on target", "recording": "0521a", "seconds": -1.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0521a", "seconds": 1728.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "unlabelled", "labeller": "none", "note": "sampled, not judged", "recording": "0521b", "seconds": 22.0, "sheet": "position"}
+{"boundary_position_pct": 30.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521b", "seconds": 1798.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0519a", "seconds": 66.0, "sheet": "position"}
+{"boundary_position_pct": 20.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0519a", "seconds": 1517.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0519b", "seconds": 911.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "no-horizon", "labeller": "rider", "note": "rider: no horizon visible", "recording": "0519b", "seconds": 1322.0, "sheet": "position"}
+{"also_labelled_at": "timestamp", "boundary_position_pct": 10.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521a", "seconds": 140.0, "sheet": "position"}
+{"boundary_position_pct": null, "framing_class": "on-target", "labeller": "rider", "note": "rider: already on target", "recording": "0521a", "seconds": 1643.0, "sheet": "position"}
+{"boundary_position_pct": 15.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521b", "seconds": 23.0, "sheet": "position"}
+{"boundary_position_pct": 30.0, "framing_class": "position-given", "labeller": "rider", "note": "rider read the 10-90 grid", "recording": "0521b", "seconds": 1062.0, "sheet": "position"}
+{"also_labelled_at": "position", "boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0521b", "seconds": 1799.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0526a", "seconds": 1400.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0526b", "seconds": 1793.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0521a", "seconds": 1754.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "rider", "note": "correction to the model's bad", "recording": "0526b", "seconds": 929.0, "sheet": "down-edge-correction"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0526b", "seconds": 1270.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0526a", "seconds": 905.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0521b", "seconds": 1070.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0521a", "seconds": 861.0, "sheet": "down-edge"}
+{"also_labelled_at": "position", "boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0521a", "seconds": -4.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "not-riding", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0519a", "seconds": -0.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0521a", "seconds": 1485.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "good", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0521b", "seconds": 473.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0519b", "seconds": 684.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0519a", "seconds": 1178.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "not-riding", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0521b", "seconds": -0.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "low", "labeller": "rider", "note": "correction to the model's good", "recording": "0519a", "seconds": 963.0, "sheet": "down-edge-correction"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0519b", "seconds": 603.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0519a", "seconds": 1800.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "not-riding", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0519b", "seconds": 1323.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0526a", "seconds": 1.0, "sheet": "down-edge"}
+{"also_labelled_at": "timestamp", "boundary_position_pct": null, "framing_class": "bad", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0526b", "seconds": 1.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0519b", "seconds": 9.0, "sheet": "down-edge"}
+{"boundary_position_pct": null, "framing_class": "bad", "labeller": "vlm", "note": "model label, uncorrected", "recording": "0526a", "seconds": 1798.0, "sheet": "down-edge"}
