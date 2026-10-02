@@ -93,8 +93,15 @@ class FramingPolicy:
     follows: str                    # gaze | travel | fixed
     anchor: str                     # the criterion, in checkable words
     occluders: tuple[str, ...] = ()
-    pitch: float | None = None          # fixed fallback; None = must be measured
-    search: PitchSearch | None = None   # how the pitch is derived, if at all
+    pitch: float | None = None
+    # How the pitch is derived, if at all. Normally a fixed `PitchSearch`, but
+    # a criterion that needs something measured ON THIS RECORDING -- a fitted
+    # ground cue -- registers a factory taking the source instead, returning a
+    # search or None. The CLI resolves the factory once it knows the source and
+    # turns None into a refusal: a policy with nothing measured on this
+    # recording has no target to sweep toward, and sweeping anyway is how an
+    # end of the ladder gets presented as a usable pitch.
+    search: "PitchSearch | Callable[[object], PitchSearch | None] | None" = None
     hint: str = "re-try with --pitch set by eye"
     notes: str = ""
     capabilities: frozenset[str] = field(default_factory=frozenset)
@@ -126,3 +133,4 @@ def policy_names() -> list[str]:
 # for its profiles: anything that resolves a policy imports this package, so
 # registration is guaranteed before lookup.
 from steadycut.framing.policies import mtb  # noqa: E402,F401  (registers "mtb")
+from steadycut.framing.policies import ground  # noqa: E402,F401  (registers "ground")

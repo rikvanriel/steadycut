@@ -33,8 +33,38 @@ def test_an_unknown_policy_returns_none() -> None:
     assert policy_for(None) is None
 
 
+def test_the_ground_policy_will_not_sweep_without_a_fitted_cue() -> None:
+    """A ground cue is per recording, so its search is a factory.
+
+    The regression this locks: before the CLI resolved factories, a missing cue
+    would have had to be swept anyway, and a sweep with no target interpolates
+    to an END OF THE LADDER and reports it as a usable pitch. Returning None is
+    the only safe answer, and the CLI turning None into a refusal is what keeps
+    "-5.0 degrees" from being presented as a measurement.
+    """
+    ground = policy_for("ground")
+    assert ground is not None
+    assert callable(ground.search), "ground must build its search per source"
+    assert ground.search("no-such-recording-anywhere.insv") is None
+    assert "needs_fitted_cue" in ground.capabilities
+    # The fallback the hint points at must remain a fixed search, or the same
+    # failure reaches the one policy that is supposed to always be available.
+    mtb = policy_for("mtb")
+    assert mtb is not None
+    assert not callable(mtb.search)
+
+
 def test_policy_names_are_listed_for_refusals() -> None:
-    assert policy_names() == ["mtb"]
+    # Every registered policy, because the refusal that tells the rider what to
+    # try instead is built from this list -- a policy that is not named here is
+    # a policy nobody can discover from a failed run. Asserted by membership so
+    # adding a third policy does not make this test the thing that has to be
+    # rewritten, but the mtb name is kept explicit since it is the fallback the
+    # hints point at.
+    names = policy_names()
+    assert "mtb" in names
+    assert "ground" in names
+    assert len(set(names)) == len(names), "a policy is registered twice"
 
 
 def test_register_refuses_duplicates() -> None:

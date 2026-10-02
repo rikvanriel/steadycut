@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from steadycut.framing.policies import PitchSearch
+from steadycut.framing.policies import FramingPolicy, PitchSearch, register
 
 # Where the ground should begin, as a fraction of frame height. Measured from
 # 19 hand-labelled frames of 0519/1200 at pitch -12: median 0.307, mean 0.311,
@@ -84,3 +84,42 @@ def ground_cue_search(cue, target: float = GROUND_TARGET,
         ladder=tuple(ladder),
         needs_colour=True,
     )
+
+
+def search_for(source):
+    """Build this recording's ground search, or None when there is no cue.
+
+    The cue is PER RECORDING and the policy is not, so the search cannot be a
+    module-level constant the way the dark-mass one is -- it has to be built
+    from the source. This factory is what the CLI calls once it knows which
+    clip it is framing.
+
+    Returning None rather than a search that cannot work is deliberate. A
+    policy whose cue is missing has no target, and a sweep with no target
+    interpolates to an end of the ladder and calls it a pitch -- which is the
+    "-5.0 degrees presented as usable" failure this module exists to prevent.
+    The caller turns None into a refusal that says the cue is missing.
+    """
+    from steadycut.core.profiles import load_for
+    profile = load_for(source)
+    if profile is None or getattr(profile, "cue", None) is None:
+        return None
+    return ground_cue_search(profile.cue)
+
+
+POLICY = register(FramingPolicy(
+    name="ground",
+    mount="helmet",
+    follows="gaze",
+    anchor="the ground/vegetation boundary starting at 31% of frame height, "
+           "from a cue fitted per recording on hand-labelled frames",
+    occluders=("own helmet at the nadir", "forest canopy, which can occlude "
+               "the boundary entirely at any pitch"),
+    search=search_for,
+    hint="run steadycut-label on this recording to fit a cue, or use "
+         "--framing mtb with --pitch set by eye",
+    notes="a ground cue is fitted per recording, so this policy only works on "
+          "recordings someone has labelled; it refuses otherwise rather than "
+          "sweeping toward a target it does not have",
+    capabilities=frozenset({"needs_fitted_cue"}),
+))

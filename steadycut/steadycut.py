@@ -228,8 +228,17 @@ def main(argv=None) -> int:
                            "policy": policy.name, "mount": policy.mount,
                            "quality": stored.quality()}
     elif policy.search is not None:
+        # A policy's search is normally a fixed PitchSearch, but one whose
+        # criterion needs something per RECORDING -- a fitted ground cue -- is
+        # registered as a factory taking the source. Resolve it here, once the
+        # source is known, and refuse plainly when the factory returns nothing:
+        # a cue that was never fitted is a missing input, not a pitch to guess.
+        search = policy.search(a.source) if callable(policy.search) else policy.search
+        if search is None:
+            return refuse(f"{policy.name} needs something fitted to THIS "
+                          f"recording and there is none", policy.hint)
         try:
-            pitch, info = ladder.solve(a.source, a.start, policy.search,
+            pitch, info = ladder.solve(a.source, a.start, search,
                                        workdir=tmp / "framing")
         except Exception as exc:
             return refuse(f"{policy.name} framing failed ({exc})", policy.hint)
