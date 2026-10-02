@@ -184,6 +184,38 @@ def measure_sync(spec: ClipSpec, lags_ms=range(-200, 61, 10),
                       inliers_med=float(np.median(traj.inliers)))
 
 
+
+def correction_euler_axes(t, gyro, tau_s, axis_map=None):
+    """Yaw, pitch and roll for v360, in the order v360 actually composes them.
+
+    v360 builds `R_yaw * R_pitch * R_roll` about Y, X and Z (vf_v360.c
+    `calculate_rotation`, default `rotation_order` YAW/PITCH/ROLL), while
+    `correction_axes` returns a rotation vector. Those three components in
+    those three slots therefore build a DIFFERENT rotation from the one meant.
+
+    The error scales with the correction, so it is negligible where the
+    correction is small and dominant where it is not. Measured at corner 0.15:
+
+        0519a  930s (rooty)      correction p95   9.6 deg -> Euler error p95  8.0
+        0519a 1170s (rock garden) correction p95 47.3 deg -> Euler error p95 22.0
+
+    A rider comparing clips on smooth trail saw no difference, which is
+    consistent: there the correction is small. On a rock garden v360 is being
+    asked for a rotation and rendering one 22 degrees away from it.
+
+    Decomposing the DESIRED rotation in v360's order is exact, so this returns
+    what the filter needs rather than an approximation of it. The axis-map signs
+    are reused exactly as `correction_axes` applies them, so this changes the
+    decomposition and nothing else.
+    """
+    from scipy.spatial.transform import Rotation as _R
+    from steadycut.stabilization import orientation as O
+    qy, qp, qr = O.correction_axes(t, gyro, tau_s, axis_map)
+    out = _R.from_rotvec(np.column_stack([qp, qy, qr]), degrees=True)
+    ang = out.as_euler("yxz", degrees=True)
+    return ang[:, 0], ang[:, 1], ang[:, 2]      # yaw, pitch, roll
+
+
 def build_gyro_path(spec: ClipSpec, stamp_offset_ms: float = 0.0,
                     corner_hz: float = 0.15, drift_ppm: float = 0.0,
                     drift_ref_s: float = 0.0):
@@ -223,7 +255,7 @@ def build_gyro_path(spec: ClipSpec, stamp_offset_ms: float = 0.0,
     tw, gw = t[mask], imu.gyro[mask]
     tau = 1.0 / (2.0 * math.pi * corner_hz)
     axis_map = spec.profile.axis_map if spec.profile is not None else None
-    qy, qp, qr = O.correction_axes(tw, gw, tau, axis_map)
+    qy, qp, qr = correction_euler_axes(tw, gw, tau, axis_map)
     from steadycut.render.reframe import ControlPoint
     from steadycut.stabilization.path import PathPoint, thin
     raw = [PathPoint(t=float(tt), yaw=float(y),
