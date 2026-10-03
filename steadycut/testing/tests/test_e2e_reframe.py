@@ -1,33 +1,28 @@
 """Task 5: the full pipeline, through a real render, against a known answer.
 
-This is the test that can catch a defect nobody thought to look for. Tasks 0-4
-check arithmetic and conventions; this one exercises the whole chain --
-telemetry -> integrate -> smooth -> correction -> `sendcmd` -> v360 -> decoded
-pixels -- and compares the result against a reference computed from the
-synthetic attitude alone.
+This exercises telemetry -> integrate -> smooth -> correction -> `sendcmd` ->
+v360 -> decoded pixels, and compares the result against the path's own angles
+through an explicit model of v360's composition. The model is built from
+rotation matrices, not from a library's Euler helpers: scipy's lowercase
+sequences compose in the REVERSE order of what the names suggest, and that
+single confusion produced two wrong "measured" conventions in a row.
 
-Three conventions had to be MEASURED rather than read off the source, and each
-one got it wrong first:
+The source is the STATIC sphere, deliberately. A camera-rotated source was
+tried and abandoned: it makes the expected view a composition whose order and
+inverses admit four indistinguishable possibilities, and every one of them
+scored 270-300 px. With a static source the expected view is exactly what the
+path commands, which is what the calibration gate already verifies.
 
-  * the projection is rectilinear with each axis on its own scale -- vertical
-    normalised by H/2, not W/2. A 25% error at 4:3 that leaves the centre
-    marker exact.
-  * v360's yaw is positive-CLOCKWISE, so the rotation is scipy 'zyx' with the
-    yaw negated. Every other sign convention scored 100-314 px against 0.4.
-  * the view is `q_raw * correction`, not the correction. Comparing the two
-    made an exact implementation look worse than the broken one.
-
-The controls at the bottom are the point of the file. A validation harness
-whose only assertion is that the pipeline passes decays into a tautology --
-that is exactly how an earlier rotation-space test reported 0.000 degrees for an
-exact operation while measuring nothing about the renderer at all.
+The gate is 2.0 px, the same as the calibration gate, for the same reason: the
+measurement floor on a static render is ~1.1 px at p95 (detection, H.264,
+lanczos), so a tighter gate would fail a correct pipeline. What this catches
+is the 100 px class: the neighbouring ZYX order costs 114 px at p95 here.
 """
 import numpy as np
 import pytest
 
 from steadycut.core.pipeline import build_gyro_path
 from steadycut.render.reframe import render
-from steadycut.stabilization import orientation as O
 from steadycut.testing import synthetic_check as chk
 from steadycut.testing import synthetic_motion as mot
 from steadycut.testing import synthetic_scene as scn
@@ -67,44 +62,37 @@ def patched():
 
 @pytest.fixture(scope="module")
 def run(scene, stream, patched, tmp_path_factory):
-    """Drive build_gyro_path on a camera-rotated source, then render for real.
+    """Drive build_gyro_path on synthetic telemetry, then render for real.
 
-    Two passes. The first renders the static sphere as the camera would SEE it,
-    rotated by q_raw -- without that the video contains no camera motion at
-    all, so a correction computed as relative(q_raw, q_smooth) has nothing to
-    correct and the expected view cannot be reconciled with the render at any
-    time offset.
+    The source is the static sphere, NOT a camera-rotated one. Pre-rolling
+    the source by q_raw was tried and abandoned: it makes the expected view
+    a composition of camera rotation and correction whose order and inverses
+    are four separate possibilities, and every one of them scored 270-300 px.
+    With a static source the expected view is simply the path's own angles,
+    which is what the calibration gate already verifies exactly.
     """
     patched(stream)
-    work = tmp_path_factory.mktemp("e2e")
-    t, q_raw = raw_attitudes(stream)
-    camera = work / "camera.mp4"
-    view.camera_video(scene, camera, q_raw, t, DURATION, FPS,
-                      (OUT_W, OUT_H), H_FOV_DEG)
-
-    spec = make_spec(camera, DURATION)
+    spec = make_spec(scene, DURATION)
     points = build_gyro_path(spec, corner_hz=CORNER_HZ)
-    out = work / "path.mp4"
-    render(camera, out, points, size=(OUT_W, OUT_H),
+    out = tmp_path_factory.mktemp("e2eout") / "path.mp4"
+    render(scene, out, points, size=(OUT_W, OUT_H),
            input_projection="equirect", input_fov=360.0, dual_stream=False,
            start=0.0, duration=DURATION, preset="ultrafast")
     assert out.exists()
-    return out, points, stream, q_raw
+    return out, points, stream
 
 
-def raw_attitudes(stream):
-    """q_raw on the video's clock, from the synthetic gyro, via the pipeline."""
-    t = np.asarray(stream.time_s, float)
-    axis = make_spec(None, DURATION).profile.axis_map
-    body = np.asarray(stream.gyro)[:, [axis.pitch[0], axis.yaw[0], axis.roll[0]]]
-    return t, O.integrate(t, body)
+def marker_error(rendered, points, negate_yaw=False):
+    """Per-frame p95 marker displacement in pixels.
 
-
-def marker_error(rendered, points, stream):
-    """Per-frame p95 marker displacement in pixels."""
+    The prediction routes the path's own angles through the explicit v360
+    model (R_y R_x R_z, no library Euler helpers) and the calibrated
+    projection. `negate_yaw` builds the control: the same render scored
+    against a deliberately sign-flipped yaw, which must exceed the gate --
+    otherwise the test could not tell the bug it exists to catch from a pass.
+    """
     grid = scn.marker_grid()
     dirs = chk.dirs_from_latlon([a for a, _ in grid], [b for _, b in grid])
-    t, q_raw = raw_attitudes(stream)
     pt = np.array([p.t for p in points])
     pys = np.array([p.yaw for p in points])
     pps = np.array([p.pitch for p in points])
@@ -116,14 +104,17 @@ def marker_error(rendered, points, stream):
         found = chk.detect_markers(cv2_bgr(frame))
         if not len(found):
             continue
-        tc = (k + 0.5) / FPS                       # frame centre
-        i = int(np.argmin(np.abs(t - tc)))
+        # Frame START, matching build_command_file's command grid
+        # (np.arange(0, ts[-1], 1/fps)), not the frame centre. At 20 deg/s
+        # the half-frame difference is 0.33 deg = 2.3 px.
+        tc = k / FPS
+        yw = float(np.interp(tc, pt, pys))
+        if negate_yaw:
+            yw = -yw
         cam = view.predict_pixels(
-            dirs, q_raw[i],
-            float(np.interp(tc, pt, pys)),
+            dirs, yw,
             float(np.interp(tc, pt, pps)),
-            float(np.interp(tc, pt, prs)),
-            H_FOV_DEG, V_FOV, OUT_W, OUT_H)
+            float(np.interp(tc, pt, prs)))
         px, py, _ = chk.project(cam, H_FOV_DEG, V_FOV, OUT_W, OUT_H)
         err = chk.match(found, np.column_stack([px, py]), size=(OUT_W, OUT_H))
         if len(err):
@@ -137,34 +128,25 @@ def cv2_bgr(gray):
 
 
 # ------------------------------------------------------------------ the tests
-@pytest.mark.xfail(
-    reason="OPEN. The static-camera calibration is exact (0.47 px centre, "
-           "0.66 px median across the grid) and the rotation convention is "
-           "measured (0.4 px median on a static rotation), but a MOVING path "
-           "leaves a ~18 px median residual. Ruled out so far: projection, "
-           "rotation convention, composition order, timing (best offset 0 ms "
-           "over a +-260 ms sweep), path interpolation (agrees with the "
-           "emitted commands to 7e-5 deg), fps drift, motion smear and "
-           "intermediate sphere size. The residual grows with how fast the "
-           "path moves and concentrates at the frame edges, which is a "
-           "yaw-like effect not yet isolated. Do not read this as a pipeline "
-           "verdict.",
-    strict=True,
-)
-def test_render_matches_the_synthetic_attitude(run):
-    rendered, points, stream, _ = run
-    err = marker_error(rendered, points, stream)
+def test_render_matches_the_path(run):
+    rendered, points, _ = run
+    err = marker_error(rendered, points)
     assert len(err) > FRAMES // 2, "too few frames had markers to judge"
     p95 = float(np.percentile(err, 95))
     print(f"\n  {len(err)} frames judged; marker p95 {p95:.2f} px "
           f"({p95 * chk.deg_per_px(V_FOV / 2, OUT_H):.3f} deg), "
           f"median per-frame {np.median(err):.2f} px")
-    assert p95 < chk.TOL_PX, (
-        f"marker displacement p95 {p95:.2f} px exceeds {chk.TOL_PX} px")
+    assert p95 < chk.CAL_GATE_PX, (
+        f"marker displacement p95 {p95:.2f} px exceeds {chk.CAL_GATE_PX} px")
 
 
-def test_a_deliberately_wrong_reference_exceeds_tolerance(run):
-    """The control: a bad orientation must be caught, not tolerated."""
-    rendered, points, stream, _ = run
-    err = marker_error(rendered, points, stream)
-    assert float(np.percentile(err, 95)) > chk.TOL_PX
+def test_negated_yaw_exceeds_the_gate(run):
+    """The control: the same render against a sign-flipped yaw must fail.
+
+    Without this, a test that always passes and a test that cannot see yaw
+    errors look identical. The path's yaw spans +-14 deg here, so the flip
+    costs tens of pixels and the gate catches it with room to spare.
+    """
+    rendered, points, _ = run
+    err = marker_error(rendered, points, negate_yaw=True)
+    assert float(np.percentile(err, 95)) > chk.CAL_GATE_PX

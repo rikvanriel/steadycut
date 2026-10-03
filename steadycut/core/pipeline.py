@@ -212,12 +212,14 @@ def correction_euler_axes(t, gyro, tau_s, axis_map=None):
     qy, qp, qr = O.correction_axes(t, gyro, tau_s, axis_map)
     corr = np.column_stack([qp, qy, qr])
     out = O.from_rotvec(np.deg2rad(corr))
-    # MEASURED, not assumed: with one marker and a static rotation, v360's
-    # composition is R_z(roll) * R_y(-yaw) * R_x(pitch) -- the yaw negated,
-    # because v360's yaw runs clockwise. Every other ordering and sign
-    # convention scored 100-314 px against 0.4 px median for this one.
-    e = O.to_euler_zyx(out)
-    return -e[:, 1], e[:, 2], e[:, 0]            # yaw, pitch, roll
+    # `to_euler_zxy` inverts the renderer's MEASURED behavior,
+    # R_z(roll) R_x(pitch) R_y(-yaw): yaw negated, pitch and roll as given.
+    # Verified against real renders on fresh angles (0.8 px median vs 25+ px
+    # for every other sign/order combination) and against explicit matrices
+    # (round-trip 2.7e-6 deg). Single-axis probes cannot choose an order and
+    # must not be used to change one.
+    e = O.to_euler_zxy(out)
+    return -e[:, 0], e[:, 1], e[:, 2]            # yaw, pitch, roll
 
 
 def build_gyro_path(spec: ClipSpec, stamp_offset_ms: float = 0.0,
