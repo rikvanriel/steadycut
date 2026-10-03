@@ -163,3 +163,20 @@ def test_write_profile_records_the_source_so_the_guard_is_live() -> None:
     assert prof.matches(src) is False, (
         "a re-export must not match a profile fitted on the previous export")
 
+
+
+def test_a_nan_held_out_error_refuses_storage() -> None:
+    """The Oct-1 shape must never reach disk again.
+
+    fit_samples reports NaN when the cue predicts nothing finite on the
+    held-out frames; store_refusal turns that report into the reason the
+    --fit path prints before exiting 2.
+    """
+    from steadycut.framing.labeller import store_refusal
+    bad = {"frames": 7, "train": 6, "held_out": 1,
+           "held_out_error": float("nan")}
+    reason = store_refusal(bad)
+    assert reason is not None and "NaN" in reason
+    good = {"frames": 19, "train": 15, "held_out": 4,
+            "held_out_error": 0.0197}
+    assert store_refusal(good) is None

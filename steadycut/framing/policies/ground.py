@@ -104,7 +104,27 @@ def search_for(source):
     profile = load_for(source)
     if profile is None or getattr(profile, "cue", None) is None:
         return None
+    if not _cue_usable(profile):
+        return None
     return ground_cue_search(profile.cue)
+
+
+def _cue_usable(profile) -> bool:
+    """A stored cue earns the sweep only if it learned something.
+
+    Two degenerate shapes on record: a fit that predicted nothing finite on
+    held-out frames (NaN error -- stored before the labeller refused such
+    fits), and a bias-only weight vector (all feature weights zero, so the
+    answer is the geometry prior whatever the picture shows). Either one
+    brackets to a ladder end while looking fitted, so both read as missing.
+    """
+    err = (profile.fitted_on or {}).get("held_out_error")
+    if err is None or err != err:  # missing or NaN
+        return False
+    w = np.asarray(profile.cue.weights, dtype=float)
+    if w.size > 1 and not np.isfinite(w).all():
+        return False
+    return bool((w[:-1] != 0).any())
 
 
 POLICY = register(FramingPolicy(

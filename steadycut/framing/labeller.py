@@ -281,6 +281,23 @@ def label_clip(video, every: int = 15, limit: int | None = None,
     return samples
 
 
+def store_refusal(report) -> str | None:
+    """Why this fit must not be stored, or None when it may be.
+
+    A fit that predicts nothing finite on held-out frames (NaN error) is
+    degenerate -- usually too few frames -- and storing it poisons the
+    loader: a bias-only cue refuses everything while LOOKING fitted.
+    (Precedent on record: a 7-frame NaN-error fit stored Oct 1 that the
+    loader preferred over the good 19-frame fit by content hash.)
+    """
+    err = report["held_out_error"]
+    if err != err:  # NaN
+        return (f"held-out error is NaN ({report['frames']} frames, "
+                f"{report['train']} train) -- the cue predicts nothing "
+                f"finite, label more frames")
+    return None
+
+
 def fit_samples(samples, source=None, held_out: float = 0.2, seed: int = 0):
     """Fit a `GroundCue` from labelled pairs and return (cue, report).
 
@@ -364,6 +381,15 @@ def main(argv=None) -> int:
             print(f"  {p}: {len(part)} labelled frames")
             samples.extend(part)
         cue, report = fit_samples(samples, source=args.source)
+        reason = store_refusal(report)
+        if reason is not None:
+            print(f"  REFUSING to store: {reason}")
+            return 2
+        err = report["held_out_error"]
+        if report["frames"] < 8:
+            print(f"  WARNING: only {report['frames']} frames (unreliable "
+                  f"below about 8) -- stored, but verify the held-out error "
+                  f"{err:.4f} before trusting this cue")
         print(f"fitted on {report['frames']} frames from {len(paths)} file(s) "
               f"({report['train']} train, {report['held_out']} held out); "
               f"held-out error {report['held_out_error']:.4f} of frame height")
