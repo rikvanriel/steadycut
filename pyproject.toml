@@ -37,7 +37,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = [
+    "pytest",
+    # The synthetic reframe harness composes and decomposes rotations with
+    # scipy, which the shipped path deliberately does not: one Euler
+    # decomposition is not worth making every install carry scipy.
+    "scipy>=1.11",
+]
 
 [project.scripts]
 steadycut = "steadycut.steadycut:main"

@@ -113,6 +113,38 @@ def to_euler(q):
     return np.degrees(np.stack([yaw, pitch, roll], axis=-1))
 
 
+def to_euler_zyx(q):
+    """ZYX Euler angles (about Z, then Y, then X), degrees.
+
+    Distinct from `to_euler`, which decomposes as R_z(yaw) R_y(pitch) R_x(roll).
+    This one gives the angles in the order R_z(a) R_y(b) R_x(c) and returns them
+    as [a, b, c], so a caller asking for (roll, yaw, pitch) can take them in
+    that order. v360 composes its three numbers that way, so this is the
+    decomposition that matches it.
+
+    Degenerate at c = +-90 deg, where b and c are no longer separable; the
+    gimbal-lock branch returns b with c = 0, which is one of the two valid
+    solutions and differs from the other only by a rotation about the locked
+    axis.
+    """
+    q = _normalise(q)
+    w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+    # For R = R_z(a) R_y(b) R_x(c): R[2][0] = -sin(b), R[1][0]/R[0][0] give a,
+    # and R[2][1]/R[2][2] give c. Note the two off-diagonal terms are
+    # R[2][0] = 2(xz - wy) and R[1][0] = 2(xy + wz) -- swapping those two makes
+    # a pure Z rotation come back as a pure Y one, which is what the first
+    # version of this did.
+    b = np.arcsin(np.clip(2.0 * (w * y - x * z), -1.0, 1.0))
+    a = np.arctan2(2.0 * (x * y + w * z), 1.0 - 2.0 * (y * y + z * z))
+    cb = np.cos(b)
+    locked = np.abs(cb) < 1e-9
+    c = np.where(locked, 0.0,
+                 np.arctan2(2.0 * (y * z + w * x),
+                            1.0 - 2.0 * (x * x + y * y)))
+    del cb, locked
+    return np.degrees(np.stack([a, b, c], axis=-1))
+
+
 def relative(q_raw, q_smooth):
     """Rotation from the raw orientation to the smoothed one.
 

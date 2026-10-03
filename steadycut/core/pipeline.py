@@ -208,15 +208,15 @@ def correction_euler_axes(t, gyro, tau_s, axis_map=None):
     are reused exactly as `correction_axes` applies them, so this changes the
     decomposition and nothing else.
     """
-    from scipy.spatial.transform import Rotation as _R
     from steadycut.stabilization import orientation as O
     qy, qp, qr = O.correction_axes(t, gyro, tau_s, axis_map)
-    out = _R.from_rotvec(np.column_stack([qp, qy, qr]), degrees=True)
+    corr = np.column_stack([qp, qy, qr])
+    out = O.from_rotvec(np.deg2rad(corr))
     # MEASURED, not assumed: with one marker and a static rotation, v360's
-    # composition is R_z(roll) * R_y(-yaw) * R_x(pitch) -- 'zyx' in scipy with
-    # the yaw negated, because v360's yaw runs clockwise. Every other ordering
-    # and sign convention scored 100-314 px against 0.4 px median for this one.
-    e = out.as_euler("zyx", degrees=True)
+    # composition is R_z(roll) * R_y(-yaw) * R_x(pitch) -- the yaw negated,
+    # because v360's yaw runs clockwise. Every other ordering and sign
+    # convention scored 100-314 px against 0.4 px median for this one.
+    e = O.to_euler_zyx(out)
     return -e[:, 1], e[:, 2], e[:, 0]            # yaw, pitch, roll
 
 
