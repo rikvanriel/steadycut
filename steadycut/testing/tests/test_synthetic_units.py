@@ -75,7 +75,7 @@ def test_quaternions_are_unit():
 
 # ---------------------------------------------------------------- Task 3
 def test_projection_puts_the_view_axis_at_the_centre():
-    px, py, ok = chk.project(np.array([[0.0, 0.0, 1.0]]), 120.0, 53.0, 960, 720)
+    px, py, ok = chk.project(np.array([[0.0, 0.0, 1.0]]), 120.0, 90.0, 960, 720)
     assert ok[0]
     assert px[0] == pytest.approx(480.0, abs=1e-9)
     assert py[0] == pytest.approx(360.0, abs=1e-9)
@@ -84,12 +84,12 @@ def test_projection_puts_the_view_axis_at_the_centre():
 def test_projection_reaches_the_frame_edge_at_half_v_fov():
     hfov = 60.0
     d = np.array([[np.sin(np.radians(hfov)), 0.0, np.cos(np.radians(hfov))]])
-    px, _, _ = chk.project(d, 2 * hfov, hfov, 960, 720)
+    px, _, _ = chk.project(d, 2 * hfov, 90.0, 960, 720)
     assert px[0] == pytest.approx(960.0, abs=1e-6)
 
 
 def test_points_behind_the_camera_are_marked_not_mirrored():
-    px, _, ok = chk.project(np.array([[0.0, 0.0, -1.0]]), 120.0, 53.0, 960, 720)
+    px, _, ok = chk.project(np.array([[0.0, 0.0, -1.0]]), 120.0, 90.0, 960, 720)
     assert not ok[0]
 
 

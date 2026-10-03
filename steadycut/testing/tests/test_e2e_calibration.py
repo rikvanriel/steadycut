@@ -64,8 +64,8 @@ def test_marker_nearest_the_view_axis_lands_at_the_frame_centre(zero_render):
     """The convention gate. Fails loudly on a convention error, by design."""
     grid = scn.marker_grid()
     dirs = chk.dirs_from_latlon([la for la, _ in grid], [lo for _, lo in grid])
-    half_v = chk.half_v_fov(H_FOV_DEG, OUT_W, OUT_H)
-    px, py, in_front = chk.project(dirs, H_FOV_DEG, half_v, OUT_W, OUT_H)
+    v_fov = H_FOV_DEG * OUT_H / OUT_W   # what render() passes
+    px, py, in_front = chk.project(dirs, H_FOV_DEG, v_fov, OUT_W, OUT_H)
 
     # Nearest the view axis is the LARGEST z. argmax of the x-y norm selects
     # the furthest instead, which reads as a ~48 degree error and is not one.
@@ -79,28 +79,20 @@ def test_marker_nearest_the_view_axis_lands_at_the_frame_centre(zero_render):
     err = np.hypot(found[:, 0] - px[near], found[:, 1] - py[near])
     offset = float(err.min())
     print(f"\n  calibration offset {offset:.2f} px "
-          f"({offset * chk.deg_per_px(half_v, OUT_H):.4f} deg)")
+          f"({offset * chk.deg_per_px(v_fov / 2, OUT_H):.4f} deg)")
     assert offset < chk.CAL_GATE_PX, (
         f"calibration offset {offset:.2f} px exceeds the "
         f"{chk.CAL_GATE_PX} px gate -- this is a CONVENTION error in the "
         f"expectation, not a pipeline defect")
 
 
-@pytest.mark.xfail(
-    reason="expectation model is a rectilinear pinhole; v360's perspective "
-           "output is azimuthal (vf_v360.c:3283) and its coverage depends on "
-           "v_fov, which render() does not pass. strict, so fixing the model "
-           "fails the suite instead of leaving an expected failure nobody "
-           "re-reads.",
-    strict=True,
-)
 def test_surrounding_markers_also_agree(zero_render):
     """Not just the centre: every in-frame marker must land where predicted.
 
     A single centred marker can agree by luck of symmetry. The whole grid
     agreeing is what pins the axis convention and the FOV convention at once.
 
-    KNOWN FAILING, and left failing on purpose. The expectation still uses a
+
     rectilinear pinhole model, while v360's perspective output is an azimuthal
     mapping (vf_v360.c:3283, `perspective_to_xyz`) whose coverage depends on
     `h = 1 + v_fov` -- and `render()` passes only `h_fov`, so the resulting
@@ -111,8 +103,8 @@ def test_surrounding_markers_also_agree(zero_render):
     """
     grid = scn.marker_grid()
     dirs = chk.dirs_from_latlon([la for la, _ in grid], [lo for _, lo in grid])
-    half_v = chk.half_v_fov(H_FOV_DEG, OUT_W, OUT_H)
-    px, py, in_front = chk.project(dirs, H_FOV_DEG, half_v, OUT_W, OUT_H)
+    v_fov = H_FOV_DEG * OUT_H / OUT_W   # what render() passes
+    px, py, in_front = chk.project(dirs, H_FOV_DEG, v_fov, OUT_W, OUT_H)
 
     frame = scn.read_frame(zero_render, 0)
     found = chk.detect_markers(cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR))

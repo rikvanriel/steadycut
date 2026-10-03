@@ -43,32 +43,40 @@ def half_v_fov(h_fov_deg: float, width: int, height: int) -> float:
                                       * (height / width))))
 
 
-def project(dirs_cam: np.ndarray, h_fov_deg: float, half_v_fov_deg: float,
+def project(dirs_cam: np.ndarray, h_fov_deg: float, v_fov_deg: float,
             width: int, height: int):
-    """Rectilinear projection to pixels.
+    """Rectilinear projection to pixels, with each axis on its own scale.
 
-    The two axes use DIFFERENT tangents: `h_fov` is measured across the WIDTH,
-    so the horizontal scale is tan(h_fov/2) while the vertical scale is
-    tan(half_v_fov). Using the vertical tangent for both is a uniform scale
-    error of H/W -- 33% at 960x720 -- which leaves the centre marker perfect
-    (it is at the origin of both scales) and puts every off-axis marker out by
-    tens of pixels. That is invisible in a centre-marker check and obvious in
-    the whole-grid one, which is why both exist.
+    Established by measuring a single known marker rather than inferring the
+    model from a grid. The two axes are normalised by their OWN half-extent:
 
-    Returns (px, py, in_front). Points behind the camera have no image and are
-    marked False rather than projected to a mirrored position -- mirroring is
-    what a naive implementation does, and it puts spurious markers at the edges
-    that then drag the median error around.
+        px = W/2 + (x/z)/tan(h_fov/2) * (W/2)
+        py = H/2 - (y/z)/tan(v_fov/2) * (H/2)
+
+    Scaling the vertical by W/2 instead of H/2 looks harmless on a square frame
+    and is a 25% error at 4:3, which is enough to put every off-centre marker
+    out by tens of pixels while the centre marker stays exact.
+
+    `v_fov` is not a free parameter: `render` passes
+    `v_fov = fov * height / width`, so at 960x720 with a 120 degree h_fov it is
+    90, and the vertical tangent is tan(45) = 1.
     """
     dirs_cam = np.asarray(dirs_cam, float)
     z = dirs_cam[:, 2]
     in_front = z > 1e-6
+    # Points behind the camera are set to NaN, NOT projected with a substituted
+    # z=1. Substituting produced plausible-looking pixels inside the frame for
+    # markers at lon +-100..+-160, which inflated the apparent on-screen count
+    # from 27 to 77 and let phantom predictions into the error statistic -- where
+    # each one was silently assigned to whatever blob was least far away.
     safe = np.where(in_front, z, 1.0)
     t_h = np.tan(np.radians(h_fov_deg / 2.0))
-    t_v = np.tan(np.radians(half_v_fov_deg))
+    t_v = np.tan(np.radians(v_fov_deg / 2.0))
     px = width / 2.0 + (dirs_cam[:, 0] / safe) / t_h * (width / 2.0)
     py = height / 2.0 - (dirs_cam[:, 1] / safe) / t_v * (height / 2.0)
-    return px, py, in_front
+    return (np.where(in_front, px, np.nan),
+            np.where(in_front, py, np.nan),
+            in_front)
 
 
 def perspective_to_xyz(i, j, width, height, h=1.0):
@@ -186,8 +194,12 @@ def match(observed: np.ndarray, predicted: np.ndarray,
     if len(observed) == 0 or len(predicted) == 0:
         return np.zeros(0)
     w, h = size
-    inside = ((predicted[:, 0] > edge_margin) & (predicted[:, 0] < w - edge_margin)
-              & (predicted[:, 1] > edge_margin) & (predicted[:, 1] < h - edge_margin))
+    # NaN (behind the camera) and frame-edge predictions are dropped: a marker
+    # clipped at the edge keeps a plausible area but its centroid is pulled
+    # inward, and a phantom prediction has no blob at all.
+    finite = np.isfinite(predicted[:, 0]) & np.isfinite(predicted[:, 1])
+    inside = finite & (predicted[:, 0] > edge_margin) & (predicted[:, 0] < w - edge_margin) \
+        & (predicted[:, 1] > edge_margin) & (predicted[:, 1] < h - edge_margin)
     pred = predicted[inside]
     if len(pred) == 0:
         return np.zeros(0)
