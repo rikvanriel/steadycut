@@ -343,6 +343,20 @@ def main(argv=None) -> int:
     cert["residual_r"] = r
     cert["far_field"] = {"render_size": list(size),
                          "corrected": corrected_score, "raw": raw_score}
+    # Same rule as the 2D pass one level down: the delivered file must beat
+    # the unstabilized baseline, judged on the delivered quantity. A mistimed
+    # gyro correction doubles wheel-frequency shake instead of removing it,
+    # and the numbers proving that are already computed here -- so a file
+    # that loses to raw says so loudly instead of shipping quietly.
+    worse_jitter = (corrected_score["jitter_px"] > raw_score["jitter_px"])
+    worse_rms = corrected_score["rms_px"] > raw_score["rms_px"]
+    cert["worse_than_raw"] = bool(worse_jitter or worse_rms)
+    if cert["worse_than_raw"]:
+        print(f"CLI| WARN delivered file worse than raw "
+              f"(jitter {raw_score['jitter_px']:.2f} -> "
+              f"{corrected_score['jitter_px']:.2f} px, rms "
+              f"{raw_score['rms_px']:.2f} -> {corrected_score['rms_px']:.2f} "
+              f"px): check sync offset and the 2D pass")
     # Roll gets its own column. The far-field numbers are both translation of
     # the landscape, and a delivered clip can bank ten degrees within five
     # seconds while they read clean -- so the one axis with no column became the
