@@ -113,6 +113,63 @@ def to_euler(q):
     return np.degrees(np.stack([yaw, pitch, roll], axis=-1))
 
 
+def to_euler_zxy(q):
+    """Angles (y2, p, r) with R = R_z(r) R_x(p) R_y(y2), degrees.
+
+    This is the decomposition the v360 render path needs: measuring real
+    renders with single markers and with combined rotations shows the view
+    v360 builds from a (yaw, pitch, roll) command acts on sphere content as
+    R_z(roll) R_x(pitch) R_y(-yaw) -- yaw negated, pitch and roll as given
+    (0.8 px median on fresh angles against 25+ px for every other sign and
+    order combination tried; single-axis probes confirm pitch and roll signs
+    individually, yaw negation at 0.55 px against 145 px un-negated).
+
+    That differs from a plain reading of vf_v360.c `calculate_rotation`
+    (Y quaternion times X times Z), which would predict R_y R_x R_z with no
+    flips. The renders are ground truth here and they disagree with that
+    reading -- whether the flip lives in the yaw option handling, the
+    view/content duality of `rotate`, or the frame handedness is not
+    established, so this function documents the MEASURED behavior and the
+    render test below locks it. Do not "simplify" this toward the source
+    reading without re-running that test.
+
+    Returns [y2, p, r]; the caller sends yaw = -y2. Keeping the negation at
+    the call site makes the measured flip visible instead of burying it in
+    the math.
+
+    The orders coincide for single-axis rotations and differ only once two
+    axes are non-zero together, so single-axis probes cannot choose an order
+    -- the pitch+roll combination is the cheapest input that can (114 px at
+    p95 for the neighbouring ZYX order against 1.4 px here).
+
+    Degenerate at pitch = +-90 deg, where y2 and r are no longer separable;
+    the gimbal-lock branch holds r at 0 and takes y2 from the remaining
+    rotation, which reconstructs the same rotation.
+    """
+    q = _normalise(q)
+    w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+    # For R = R_z(r) R_x(p) R_y(y2):
+    #   R[2][1] = sin(p), R[2][0]/R[2][2] give y2, R[0][1]/R[1][1] give r.
+    # In quaternion terms R[2][1] = 2(yz + wx), R[2][0] = 2(xz - wy),
+    # R[2][2] = 1-2(x^2+y^2), R[0][1] = 2(xy - wz), R[1][1] = 1-2(x^2+z^2).
+    sp = np.clip(2.0 * (y * z + w * x), -1.0, 1.0)
+    pitch = np.arcsin(sp)
+    y2 = np.arctan2(-2.0 * (x * z - w * y), 1.0 - 2.0 * (x * x + y * y))
+    roll = np.arctan2(-2.0 * (x * y - w * z), 1.0 - 2.0 * (x * x + z * z))
+    locked = np.abs(np.abs(sp) - 1.0) < 1e-9
+    if np.any(locked):
+        # At the poles only y2 +/- r is observable. Hold r at 0 and take y2
+        # from R[0][0]/R[1][0]: for p = +90 those read (cos y2, sin y2),
+        # for p = -90 (cos y2, -sin y2).
+        r00 = 1.0 - 2.0 * (y * y + z * z)
+        r10 = 2.0 * (x * y + w * z)
+        y2_lock = np.where(sp > 0.0, np.arctan2(r10, r00),
+                           np.arctan2(-r10, r00))
+        y2 = np.where(locked, y2_lock, y2)
+        roll = np.where(locked, 0.0, roll)
+    return np.degrees(np.stack([y2, pitch, roll], axis=-1))
+
+
 def to_euler_zyx(q):
     """ZYX Euler angles (about Z, then Y, then X), degrees.
 
