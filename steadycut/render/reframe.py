@@ -282,7 +282,7 @@ def render(
         raise ValueError("camera path has no control point at or after t=0")
     first = start_points[0]
 
-    commands = build_command_file(path)
+    commands = build_command_file(path, fps=source_fps(str(source)))
     handle = tempfile.NamedTemporaryFile(
         "w", suffix=".cmd", delete=False, encoding="utf-8"
     )
