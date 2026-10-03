@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -66,6 +66,10 @@ class SyncResult:
     r_at_zero: float
     curve: tuple = ()
     inliers_med: float = 0.0
+    # Significance floor for |r_best|, set by the estimator from the scan
+    # length (4/sqrt(n)): a fixed 0.5 demands t~16 on a 26 s scan, so real
+    # offsets read "weak" and get discarded. Default preserves old callers.
+    r_thresh: float = 0.5
 
 
 def plate_scale(h_fov: float, w: int = 1280, h: int = 960) -> tuple[float, float]:
@@ -155,33 +159,46 @@ def gyro_pitch_per_frame(source: str | Path, t0: float, n: int,
 
 
 def measure_sync(spec: ClipSpec, lags_ms=range(-200, 61, 10),
-                workdir: str | Path | None = None) -> SyncResult:
+                workdir: str | Path | None = None,
+                pad_s: float = 10.0) -> SyncResult:
     """Gyro-stamp offset for one file+window, returned -- not written.
 
     Renders a constant-framing baseline to a temp dir (kept only if workdir
     is given), tracks the far field, and correlates vertical image motion
     against gyro pitch across lags. Peak |r| wins; r at 0 is reported so a
     caller can tell unobservable from aligned.
+
+    The scan runs on the clip padded by `pad_s` seconds each side (clamped
+    at 0), not on the clip itself: on short windows the correlation strength
+    is estimation noise -- one 6 s rock-garden window read r=-0.33 (weak,
+    offset discarded) at fov 120 against r=-0.64 (strong, lag -100 ms) at
+    fov 104.8, same lag both times -- while 20 s windows read strong at both
+    fovs on all four validation windows. The lag applies to the clip; the
+    padding only feeds the estimator.
     """
     from steadycut.ingest.telemetry import read_telemetry  # noqa: F401 (warms cache)
     tmp = Path(workdir) if workdir else Path(tempfile.mkdtemp())
     tmp.mkdir(parents=True, exist_ok=True)
+    start = max(0.0, spec.start - pad_s)
+    scan = replace(spec, start=start,
+                   duration=(spec.duration + spec.start - start + pad_s))
     video = tmp / "sync_raw.mp4"
-    render_constant(spec, video)
+    render_constant(scan, video)
     traj = track_far(video)
-    _, ppdy = plate_scale(spec.fov)
+    _, ppdy = plate_scale(scan.fov)
     dy = traj.deltas[:, 1] / ppdy  # deg per frame
     curve = []
-    axis_map = spec.profile.axis_map if spec.profile is not None else None
+    axis_map = scan.profile.axis_map if scan.profile is not None else None
     for lag in lags_ms:
-        pr = gyro_pitch_per_frame(spec.source, spec.start + lag / 1000.0,
+        pr = gyro_pitch_per_frame(scan.source, scan.start + lag / 1000.0,
                                   len(dy), axis_map=axis_map)
         curve.append((float(lag), correlate(pr, dy)))
     best = max(curve, key=lambda kv: abs(kv[1]))
     r0 = dict(curve).get(0, float("nan"))
     return SyncResult(lag_ms=best[0], r_best=best[1], r_at_zero=r0,
                       curve=tuple(curve),
-                      inliers_med=float(np.median(traj.inliers)))
+                      inliers_med=float(np.median(traj.inliers)),
+                      r_thresh=4.0 / math.sqrt(len(dy)))
 
 
 

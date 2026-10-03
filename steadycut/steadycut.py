@@ -264,12 +264,17 @@ def main(argv=None) -> int:
 
     # 3. sync (same window; validated by residual later, not by a 2nd window).
     sync = measure_sync(spec, workdir=tmp / "sync")
-    if abs(sync.r_best) < 0.5:
-        print(f"CLI| WARN weak sync r={sync.r_best:+.2f}: zero offset")
+    # The threshold rides with the estimator (4/sqrt(n) of the scan): a fixed
+    # 0.5 discarded a real -100 ms offset on a 26 s rock-garden scan
+    # (r=-0.37, t~11) and the render doubled the wheel shake.
+    if abs(sync.r_best) < sync.r_thresh:
+        print(f"CLI| WARN weak sync r={sync.r_best:+.2f} "
+              f"(thresh {sync.r_thresh:.2f}): zero offset")
         offset_ms, sync_used = 0.0, False
     else:
         offset_ms, sync_used = -sync.lag_ms, True
     cert["sync"] = {"lag_ms": sync.lag_ms, "r": sync.r_best,
+                    "r_thresh": sync.r_thresh,
                     "offset_applied": offset_ms, "used": sync_used}
     print(f"CLI| sync lag {sync.lag_ms:.0f}ms r={sync.r_best:+.2f} "
           f"-> offset {offset_ms:+.0f}ms")
