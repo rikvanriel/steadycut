@@ -76,3 +76,35 @@ def test_tracked_displacement_matches_the_known_path(render_two):
     print(f"\n  {n} tracks, median error {np.median(errs):.2f}px, "
           f"p95 {np.percentile(errs, 95):.2f}px")
     assert np.percentile(errs, 95) < 2.0
+
+
+def test_residual_is_zero_where_nothing_translated(render_two):
+    """The instrument floor, measured where the answer is zero.
+
+    The synthetic camera rotates but never translates, so after removing the
+    known rotation every residual is instrument noise. This number is the
+    floor every real-footage residual must clear before it means anything.
+    """
+    import sys
+    sys.path.insert(0, "/source/upstream/steadycut")
+    from steadycut.testing import translation_residual as res
+    frames, pts = render_two
+    pt = np.array([p.t for p in pts])
+    pyr = np.array([(p.yaw, p.pitch, p.roll) for p in pts])
+    all_r = []
+    for k in range(0, FRAMES - 1, 10):
+        tracks = trk.track(frames[k], frames[k + 1])
+        if len(tracks) == 0:
+            continue
+        m0 = view.v360_matrix(*np.array(
+            [np.interp(k / FPS, pt, pyr[:, i]) for i in range(3)]))
+        m1 = view.v360_matrix(*np.array(
+            [np.interp((k + 1) / FPS, pt, pyr[:, i]) for i in range(3)]))
+        rel = m1 @ np.linalg.inv(m0)
+        r = res.residual(tracks, rel, H_FOV_DEG, V_FOV)
+        if len(r):
+            all_r.extend(r[:, 2].tolist())
+    all_r = np.asarray(all_r)
+    assert len(all_r) > 50, f"only {len(all_r)} residuals to judge"
+    print(f"\n  {len(all_r)} residuals, median {np.median(all_r):.2f}px")
+    assert np.median(all_r) < 2.0
