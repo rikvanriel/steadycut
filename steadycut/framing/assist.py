@@ -15,6 +15,8 @@ validated, and "fixing" it silently changes every boundary.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 AGREE = 0.03           # max median pairwise disagreement to trust a frame
@@ -77,7 +79,9 @@ def slope_keep(boundary: np.ndarray, height: int,
 
 def median_boundary(*bounds: np.ndarray) -> np.ndarray:
     """Per-column median across estimators (NaN-aware)."""
-    return np.nanmedian(np.stack(bounds), axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN columns
+        return np.nanmedian(np.stack(bounds), axis=0)
 
 
 class AssistModels:
@@ -93,10 +97,8 @@ class AssistModels:
 
     def seg(self):
         if self._seg is None:
-            import torch
             from transformers import SegformerForSemanticSegmentation
             d = self._models.ensure("segformer-b2-ade", self._dir)
-            self._torch = torch
             self._seg = SegformerForSemanticSegmentation.from_pretrained(
                 str(d)).eval()
         return self._seg
@@ -105,8 +107,9 @@ class AssistModels:
         if self._dino is None:
             from transformers import AutoImageProcessor, AutoModel
             d = self._models.ensure("dinov2-small", self._dir)
-            self._dino_proc = AutoImageProcessor.from_pretrained(str(d))
-            self._dino = AutoModel.from_pretrained(str(d)).eval()
+            proc = AutoImageProcessor.from_pretrained(str(d))
+            model = AutoModel.from_pretrained(str(d)).eval()
+            self._dino = (proc, model)
         return self._dino
 
     def depth_session(self):
@@ -126,6 +129,7 @@ class AssistModels:
     def boundaries(self, bgr: np.ndarray):
         """(seg, dino, depth) per-column boundaries for one BGR frame."""
         import cv2
+        import torch
         h, w = bgr.shape[:2]
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -133,7 +137,6 @@ class AssistModels:
         # segformer
         r = cv2.resize(rgb.astype(np.float32), (512, 512),
                        interpolation=cv2.INTER_CUBIC)
-        torch = self._torch
         with torch.no_grad():
             xs = torch.from_numpy(
                 ((r / 255.0 - mean) / std).transpose(2, 0, 1)[None])
@@ -143,11 +146,11 @@ class AssistModels:
                 align_corners=False).argmax(1)[0].numpy()
         b_seg = topmost(np.isin(sl, list(GROUND_CLASSES)), h, w)
         # dino + kmeans, widest bottom-edge cluster
+        proc, dino = self.dino()
         with torch.no_grad():
-            xd = self._dino_proc(
-                images=rgb, return_tensors="pt")["pixel_values"]
-            feat = self.dino()(pixel_values=xd
-                               ).last_hidden_state[0, 1:, :].numpy()
+            xd = proc(images=rgb, return_tensors="pt")["pixel_values"]
+            feat = dino(pixel_values=xd
+                        ).last_hidden_state[0, 1:, :].numpy()
         from sklearn.cluster import KMeans
         gh = gw = int(np.sqrt(len(feat)))
         dl = KMeans(n_clusters=4, n_init=4,

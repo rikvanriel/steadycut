@@ -44,6 +44,17 @@ dev = [
     # decomposition is not worth making every install carry scipy.
     "scipy>=1.11",
 ]
+ml = [
+    # Assist-mode labelling only (steadycut.framing.assist): three pinned
+    # models behind steadycut.models.ensure(), never imported by the base
+    # install. torch is CPU-usable; CUDA users already know where to look.
+    # onnxruntime runs the depth model in the exact convention Task-8
+    # validated (0-255 input, see assist module docstring).
+    "torch",
+    "transformers",
+    "onnxruntime>=1.17",
+    "scikit-learn",
+]
 
 [project.scripts]
 steadycut = "steadycut.steadycut:main"

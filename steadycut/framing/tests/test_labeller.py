@@ -180,3 +180,21 @@ def test_a_nan_held_out_error_refuses_storage() -> None:
     good = {"frames": 19, "train": 15, "held_out": 4,
             "held_out_error": 0.0197}
     assert store_refusal(good) is None
+
+
+def test_proposals_draw_green_for_trusted_yellow_for_review() -> None:
+    """Trust colors the proposal; the rider still presses the key.
+
+    Green = triple agreement (trace quickly), yellow = inspect first.
+    No proposal drawn where the model has nothing finite.
+    """
+    import numpy as np
+    from steadycut.framing.labeller import draw_proposals
+    frame = np.zeros((100, 200, 3), dtype=np.uint8)
+    good = np.full(200, 0.4)
+    hook = draw_proposals({3: (good, True), 7: (good, False)})
+    assert hook(9, frame, [], 200, 100) is frame  # no proposal: untouched
+    g = hook(3, frame, [], 200, 100)
+    assert (g[40, ::4] == (0, 200, 0)).all()  # BGR green dots on the line
+    y = hook(7, frame, [], 200, 100)
+    assert (y[40, ::4] == (0, 215, 255)).all()  # BGR yellow dots

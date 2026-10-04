@@ -281,6 +281,62 @@ def label_clip(video, every: int = 15, limit: int | None = None,
     return samples
 
 
+def draw_proposals(proposals):
+    """An on_frame hook drawing assist proposals: green = triple agreement
+    (accept with Return), yellow = inspect first (trace or correct).
+
+    Nothing auto-accepts: trust colors the proposal, the rider still presses
+    the key. A green line that is wrong costs one glance; a silently stored
+    wrong boundary costs a recording's fit.
+    """
+
+    def on_frame(idx, frame, pts, w, h):
+        prop = proposals.get(idx)
+        if prop is None:
+            return frame
+        boundary, trusted = prop
+        vis = frame.copy()
+        color = (0, 200, 0) if trusted else (0, 215, 255)
+        for c in range(0, w, 4):
+            if 0 <= c < len(boundary) and np.isfinite(boundary[c]):
+                cv2.circle(vis, (c, int(boundary[c] * h)), 3, color, -1)
+        return vis
+
+    return on_frame
+
+
+def assist_clip(video, every: int = 15, limit: int | None = None,
+                scale: float = 1.0, on_root=None, models=None):
+    """label_clip with model proposals drawn for tracing/correction.
+
+    First pass runs the three estimators over the sampled frames (slow,
+    offline, models download on first use via the pinned manifest);
+    second pass is the standard Tk window with each proposal drawn --
+    green where the models agree, yellow where the rider should look
+    twice. Returns (samples, n_trusted).
+    """
+    from steadycut.framing import assist as _assist
+    models = models or _assist.AssistModels()
+    frames = [(i, f) for i, f in iter_frames(video, every=every,
+                                             limit=limit)]
+    proposals = {}
+    n_trusted = 0
+    for i, f in frames:
+        try:
+            boundary, trusted = _assist.propose(f, models)
+        except Exception as exc:  # a model failing must not eat labels
+            print(f"  frame {i}: proposal failed ({exc}), labelling blind")
+            continue
+        proposals[i] = (boundary, trusted)
+        n_trusted += bool(trusted)
+    print(f"  {n_trusted}/{len(frames)} frames triple-agree (green); "
+          f"the rest are yellow -- trace or correct")
+    # The Tk loop re-reads the clip; proposals ride along by frame index.
+    samples = label_clip(video, every=every, limit=limit, scale=scale,
+                         on_frame=draw_proposals(proposals), on_root=on_root)
+    return samples, n_trusted
+
+
 def store_refusal(report) -> str | None:
     """Why this fit must not be stored, or None when it may be.
 
@@ -367,6 +423,9 @@ def main(argv=None) -> int:
                     help="the source file the cue is fitted on (for the guard)")
     ap.add_argument("--profile", type=Path, help="profile JSON to write")
     ap.add_argument("--every", type=int, default=15, help="sample every N frames")
+    ap.add_argument("--assist", action="store_true",
+                    help="draw model proposals for tracing/correction "
+                    "(needs the ml extra; downloads pinned weights once)")
     ap.add_argument("--limit", type=int, default=None, help="stop after N frames")
     args = ap.parse_args(argv)
 
@@ -403,7 +462,12 @@ def main(argv=None) -> int:
 
     if not args.video:
         ap.error("give a VIDEO to label, or --fit to fit an existing sample set")
-    samples = label_clip(args.video, every=args.every, limit=args.limit)
+    if args.assist:
+        samples, n_trusted = assist_clip(args.video, every=args.every,
+                                         limit=args.limit)
+    else:
+        samples = label_clip(args.video, every=args.every, limit=args.limit)
+        n_trusted = 0
     if not args.samples:
         ap.error("--samples is required when labelling")
     samples_to_npz(samples, args.samples)

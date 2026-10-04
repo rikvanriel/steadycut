@@ -2,8 +2,9 @@
 
 Nothing here downloads at import, at install, or during the test suite: every
 entry resolves through `ensure()`, which checks the local cache (sha256 of
-file CONTENT, the name the Hub itself addresses blobs by) and fetches only a
-missing or corrupt file, from a pinned revision. Offline, or on a hash
+file CONTENT, read off downloaded bytes -- never off Hub cache filenames,
+which use LFS-pointer naming on some files) and fetches only a missing or
+corrupt file, from a pinned revision. Offline, or on a hash
 mismatch, it raises naming the feature, the manual URL, and the
 `STEADYCUT_MODELS_DIR` override -- never a bare connection error, never a
 half-written file (atomic rename), never weights in git.
@@ -59,7 +60,7 @@ MODELS: dict[str, Model] = {
             ModelFile("nvidia/segformer-b2-finetuned-ade-512-512",
                       "de01bae28967510f9ddd496c60a969357195400c",
                       "pytorch_model.bin",
-                      "5f4a537ce9670e4d8d7930c79c9213766ad459e2012237f4aa383d3850439260",
+                      "187ca07bea003a5717c63d04ea90b07f33cd033c0ebf44b4b89fce5070d6c8f3",
                       110000905),
         ),
     ),
@@ -80,7 +81,7 @@ MODELS: dict[str, Model] = {
             ModelFile("facebook/dinov2-small",
                       "ed25f3a31f01632728cabb09d1542f84ab7b0056",
                       "model.safetensors",
-                      "58591664a535b604df1061ec047ff77f564b950071c0f9045f4bb6bbea71c30f",
+                      "ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1",
                       88249960),
         ),
     ),
