@@ -89,18 +89,19 @@ MODELS: dict[str, Model] = {
         name="depth-anything-v2-small-onnx",
         needed_by="assist-mode triage (steadycut.framing.assist)",
         files=(
-            # Repo TBD: the validated bytes predate provenance tracking.
-            # Upload model_quantized.onnx + .onnx_data to the project account
-            # and fill repo/rev here; until then ensure() refuses with the
-            # manual path (the local Oct-1 copy keeps working where present).
-            ModelFile("TBD-project-account/depth-anything-v2-small-onnx",
-                      "TBD",
-                      "model_quantized.onnx",
+            # Provenance recovered 2026-10-03 by content hash: the validated
+            # bytes are onnx-community's export (producer tag in the graph
+            # says huggingface-optimum style, input pixel_values). The two
+            # lookalikes checked (Xenova V1-small, HF transformers V2-small)
+            # are different models, not different packagings.
+            ModelFile("onnx-community/depth-anything-v2-small-ONNX",
+                      "c3b67641fd837b2368757101311e5d21e511441e",
+                      "onnx/model_quantized.onnx",
                       "ed7680047cd210143f9f9c4468d049c1f19f8a7a58631d52868831376fe152c9",
                       162005),
-            ModelFile("TBD-project-account/depth-anything-v2-small-onnx",
-                      "TBD",
-                      "model_quantized.onnx_data",
+            ModelFile("onnx-community/depth-anything-v2-small-ONNX",
+                      "c3b67641fd837b2368757101311e5d21e511441e",
+                      "onnx/model_quantized.onnx_data",
                       "1595c419ac7d75a356c6835890f2e64fd370a38444ddfcb741ca6b6b96e1a42a",
                       38414848),
         ),
