@@ -41,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="manual framing pitch (skips the policy's measurement)")
     ap.add_argument("--no-2d", action="store_true",
                     help="skip the bounded 2D residual pass")
+    ap.add_argument("--no-level", action="store_true",
+                    help="skip gravity levelling (keep the raw mount roll)")
     ap.add_argument("--preset", default="medium",
                     help="x264 preset for the final encode")
     ap.add_argument("--camera", default=None, metavar="MODEL",
@@ -279,11 +281,27 @@ def main(argv=None) -> int:
     print(f"CLI| sync lag {sync.lag_ms:.0f}ms r={sync.r_best:+.2f} "
           f"-> offset {offset_ms:+.0f}ms")
 
-    # 4. gyro path + render.
+    # 4. gyro path + gravity levelling + render. Levelling is the static
+    # roll offset the relative gyro path cannot see (it follows slow motion
+    # as its trend); measured from the accel median over the clip start,
+    # which holds for tens of minutes (drift_check: gyro vs gravity ~2 deg
+    # over 25 min). Pitch is deliberately untouched: framing owns it.
     out = Path(a.out) if a.out else Path(f"clip_{int(a.start)}s.mp4")
     try:
         pts = build_gyro_path(spec, stamp_offset_ms=offset_ms,
                               corner_hz=a.corner)
+        if a.no_level:
+            cert["level"] = {"applied": False, "reason": "flag"}
+        else:
+            from steadycut.ingest.telemetry import read_telemetry
+            from steadycut.stabilization.level import apply_shift, measure_shift
+            axis_map = spec.profile.axis_map if spec.profile is not None else None
+            imu = read_telemetry(str(spec.source), profile=spec.profile)
+            lv = measure_shift(imu, spec.start, spec.duration, axis_map)
+            pts = apply_shift(pts, lv["shift_deg"])
+            cert["level"] = {"applied": True, **lv}
+            print(f"CLI| level shift {lv['shift_deg']:+.1f}deg "
+                  f"(|g| {lv['g_norm']:.2f}, {lv['span_s']:.0f}s)")
         render_path(spec, pts, out, preset=a.preset)
     except Exception as exc:
         return refuse(f"render failed ({exc})", "no clip claimed")
