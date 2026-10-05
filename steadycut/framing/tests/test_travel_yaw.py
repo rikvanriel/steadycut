@@ -19,35 +19,39 @@ from steadycut.stabilization import path as P
 from steadycut.render.reframe import render
 
 
-def args_for(travel_yaw):
+def args_for(travel_yaw, method="blend"):
+    from steadycut.render.stitch import StitchSpec
+    spec = StitchSpec(method=method, gain=(1.0, 1.0, 1.0))
     return render("in.insv", "out.mp4",
                   [P.PathPoint(t=0.0, fov=100.0, pitch=-22.0)],
-                  travel_yaw=travel_yaw, dry_run=True)
+                  travel_yaw=travel_yaw, dry_run=True, stitch=spec)
 
 
 def filtergraph(argv):
     return argv[argv.index("-filter_complex") + 1]
 
 
-def test_default_is_single_pass():
-    """A normally mounted camera must not pay for a second reprojection."""
+def test_default_is_blend_stitch_then_single_flat():
+    """Default sphere assembly is the two-pass blend (one v360 per lens),
+    then a single flat projection reading that sphere."""
     graph = filtergraph(args_for(0.0))
-    assert graph.count("v360=") == 1
-    assert "input=dfisheye" in graph
-    assert "input=equirect" not in graph
+    assert graph.count("v360=") == 3
+    assert "maskedmerge" in graph
+    assert "input=dfisheye" not in graph
+    assert graph.split(";")[-1].endswith("[v]")
+    assert "input=equirect" in graph.split(";")[-1]
 
 
 def test_reversed_mount_reorients_the_sphere():
     graph = filtergraph(args_for(180.0))
-    assert graph.count("v360=") == 2
-    # The first pass turns the fisheye into a sphere with the reorientation...
-    first, second = graph.split(";")
-    assert "input=dfisheye" in first and "output=equirect" in first
-    assert "yaw=-180" in first
-    # ...and the second projects from that sphere, not from the fisheye again.
-    assert "input=equirect" in second
+    # Blend stitch (2 lens passes) + sphere reorientation + flat projection.
+    assert graph.count("v360=") == 4
+    assert "maskedmerge" in graph
+    assert "yaw=-180" in graph
+    # ...and the final projection reads from a sphere, not the fisheye.
+    assert "input=equirect" in graph.split(";")[-1]
     # id_fov describes the fisheye input and must not be passed to a sphere.
-    assert "id_fov=0" in second
+    assert "id_fov=0" in graph.split(";")[-1]
 
 
 def test_framing_yaw_is_unchanged_by_reorientation():

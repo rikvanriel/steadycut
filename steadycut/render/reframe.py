@@ -228,6 +228,7 @@ def render(
     sphere_size: tuple[int, int] = (2048, 1024),
     geometry=None,
     dry_run: bool = False,
+    stitch=None,
 ) -> list[str]:
     """Reproject `source` along `path` and encode to `output`.
 
@@ -281,6 +282,45 @@ def render(
     if not start_points:
         raise ValueError("camera path has no control point at or after t=0")
     first = start_points[0]
+
+    if stitch is None:
+        from steadycut.render.stitch import StitchSpec
+        stitch = StitchSpec()
+    # Default is the legacy single-pass path: the blend stitch is real but its
+    # lens bake costs ~20 min per 6 s window (measured), so it is opt-in until
+    # that is optimized. See steadycut.render.stitch for the scoreboard.
+    use_blend = dual and proj == "dfisheye" and getattr(
+        stitch, "method", "legacy") == "blend"
+    if use_blend:
+        from steadycut.render.stitch import measure_gain, sphere_filtergraph
+        if stitch.gain is not None:
+            gain = stitch.gain
+        elif dry_run:
+            from steadycut.render.stitch import GAIN_DEFAULT
+            gain = GAIN_DEFAULT
+        else:
+            gain = measure_gain(str(source))
+        gain_measured = stitch.gain is None
+        sfg, mask_path = sphere_filtergraph(stitch, gain, sphere_size)
+        if dry_run:
+            lens_a = Path("baked-lens-A.mp4")
+            lens_b = Path("baked-lens-B.mp4")
+        else:
+            from steadycut.render.stitch import bake_lens_tracks
+            bake_dir = Path(tempfile.mkdtemp(prefix="steadycut-stitch-"))
+            lens_a, lens_b = bake_lens_tracks(
+                str(source), stitch, gain,
+                snap_to_frame(start, source) if start is not None else None,
+                duration, bake_dir, fps=f"{source_fps(str(source)):g}")
+        stitch_record = {
+            "method": "blend", "gain": [round(g, 4) for g in gain],
+            "gain_measured": gain_measured,
+            "lens_fov": [stitch.lens_fov_a, stitch.lens_fov_b],
+            "ramp_deg": stitch.ramp_deg,
+            "deflare_poly": list(stitch.deflare_poly)}
+    else:
+        stitch_record = {"method": "legacy"}
+    render.stitch_record = stitch_record
 
     commands = build_command_file(path, fps=source_fps(str(source)))
     handle = tempfile.NamedTemporaryFile(
@@ -360,17 +400,36 @@ def render(
         # 70.5), partial at 170 (39.3) and 179 (26.6), and NONE at exactly
         # +-180 (0.25). Swapping the inputs puts forward at yaw 0 and the
         # bicycle is visible when looking down.
-        filtergraph = f"{STACK_ORDERS[order]}{reproject}[v]"
+        if use_blend:
+            # Two-pass blend stitch: per-lens equirect on [s], then the
+            # existing flat stage reads the sphere (input=equirect, same
+            # structure as the travel_yaw path below).
+            stage_two = reproject.replace(f"input={proj}:", "input=equirect:")
+            stage_two = stage_two.replace(f"id_fov={fov}", "id_fov=0")
+            filtergraph = f"{sfg};[s]{stage_two}[v]"
+        else:
+            filtergraph = f"{STACK_ORDERS[order]}{reproject}[v]"
         args = ["ffmpeg", "-hide_banner", "-y"]
         if start is not None:
             args += ["-ss", f"{snap_to_frame(start, source):g}"]
         if duration is not None:
             args += ["-t", f"{duration:g}"]
+        if use_blend:
+            # Baked lens tracks are ordinary video inputs [0:v]/[1:v]; the
+            # mask is a looped still [2:v] pinned to the video rate (at the
+            # 25 fps default the maskedmerge frame-sync churns). The source
+            # rides along as [3] for audio only (the bakes carry no audio).
+            args += ["-i", str(lens_a), "-i", str(lens_b),
+                     "-loop", "1", "-framerate",
+                     f"{source_fps(str(source)):g}",
+                     "-i", str(mask_path),
+                     "-i", str(source)]
+        else:
+            args += ["-i", str(source)]
         args += [
-            "-i", str(source),
             "-filter_complex", filtergraph,
             "-map", "[v]",
-            "-map", "0:a:0?",
+            "-map", "3:a:0?" if use_blend else "0:a:0?",
         ]
     else:
         filtergraph = reproject

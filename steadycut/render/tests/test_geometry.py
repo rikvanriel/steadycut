@@ -18,8 +18,21 @@ def _filtergraph(geometry=None, **kwargs) -> str:
     return next(a for a in args if "v360" in a)
 
 
-def test_x4_geometry_reproduces_the_legacy_filtergraph() -> None:
-    fg = _filtergraph(geometry=X4.lens)
+def test_blend_stitch_graph_is_wired() -> None:
+    """The blend path must actually reach the graph when asked for."""
+    from steadycut.render.stitch import StitchSpec
+    fg = _filtergraph(geometry=X4.lens,
+                      stitch=StitchSpec(method="blend", gain=(1.0, 1.0, 1.0)))
+    # Two-pass blend: per-lens equirect with calibrated FOVs, maskedmerge.
+    assert "v360=input=fisheye:output=e:ih_fov=182.2" in fg
+    assert "v360=input=fisheye:output=e:ih_fov=180.6" in fg
+    assert "maskedmerge" in fg
+    assert "reset_rot=1" in fg
+
+
+def test_legacy_is_the_default_and_survives() -> None:
+    from steadycut.render.stitch import StitchSpec
+    fg = _filtergraph(geometry=X4.lens, stitch=StitchSpec(method="legacy"))
     assert fg.startswith("[0:v:1][0:v:0]hstack=inputs=2,")
     # sqrt(2) * 181.37, v360's diagonal convention, computed in resolve_input.
     assert "v360=input=dfisheye:output=flat:id_fov=256.49591380760825:" in fg
@@ -27,9 +40,13 @@ def test_x4_geometry_reproduces_the_legacy_filtergraph() -> None:
 
 
 def test_front_first_flips_the_stream_mapping() -> None:
+    from steadycut.render.stitch import StitchSpec
     g = LensGeometry(projection="dfisheye", lenses=2, lens_fov_deg=181.37,
                      stack_order="front_first")
-    assert _filtergraph(geometry=g).startswith("[0:v:0][0:v:1]hstack=inputs=2,")
+    # Stream mapping is a legacy-graph property; pin it on the legacy path.
+    assert _filtergraph(geometry=g,
+                        stitch=StitchSpec(method="legacy")).startswith(
+                            "[0:v:0][0:v:1]hstack=inputs=2,")
 
 
 def test_single_lens_has_no_stack_stage() -> None:

@@ -43,6 +43,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="skip the bounded 2D residual pass")
     ap.add_argument("--no-level", action="store_true",
                     help="skip gravity levelling (keep the raw mount roll)")
+    ap.add_argument("--stitch", default="legacy", choices=("blend", "legacy"),
+                    help="sphere assembly. legacy = single-pass dfisheye "
+                    "(default, fast). blend = two-pass + per-clip gain + "
+                    "blue deflare: removes the seam's tone step and blue cast "
+                    "(step 22->10 abs, fringe 35->19) but bakes both 2880^2 "
+                    "lens tracks first, ~20 min per 6 s window as measured -- "
+                    "opt in until the bake is optimized")
     ap.add_argument("--preset", default="medium",
                     help="x264 preset for the final encode")
     ap.add_argument("--camera", default=None, metavar="MODEL",
@@ -261,8 +268,12 @@ def main(argv=None) -> int:
     print(f"CLI| framing pitch {pitch:.1f} "
           f"(policy {policy.name}, mount {policy.mount}, "
           f"follows {policy.follows})")
+    from steadycut.render.stitch import StitchSpec
+    stitch = (StitchSpec(method="blend") if a.stitch == "blend"
+              else StitchSpec(method="legacy"))
     spec = ClipSpec(source=a.source, start=a.start, duration=a.dur,
-                    framing_pitch=pitch, fov=fov, size=size, profile=profile)
+                    framing_pitch=pitch, fov=fov, size=size, profile=profile,
+                    stitch=stitch)
 
     # 3. sync (same window; validated by residual later, not by a 2nd window).
     sync = measure_sync(spec, workdir=tmp / "sync")
@@ -303,6 +314,15 @@ def main(argv=None) -> int:
             print(f"CLI| level shift {lv['shift_deg']:+.1f}deg "
                   f"(|g| {lv['g_norm']:.2f}, {lv['span_s']:.0f}s)")
         render_path(spec, pts, out, preset=a.preset)
+        from steadycut.render import reframe as _rf
+        cert["stitch"] = dict(_rf.render.stitch_record)
+        st = cert["stitch"]
+        if st["method"] == "blend":
+            print(f"CLI| stitch blend (gain "
+                  f"{'+'.join(f'{g:.3f}' for g in st['gain'])}"
+                  f"{', measured' if st.get('gain_measured') else ', default'})")
+        else:
+            print("CLI| stitch legacy")
     except Exception as exc:
         return refuse(f"render failed ({exc})", "no clip claimed")
     print(f"CLI| wrote {out}")

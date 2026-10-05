@@ -39,7 +39,12 @@ class ClipSpec:
     NOT a production framing: the pitch is measured per recording by the
     framing policy for the mount (steadycut.framing.policies) and must never be
     carried across rides.
+
+    `stitch` is input assembly (which lens pixels land where), not correction:
+    it rides here so raw baselines and delivered clips render the same sphere
+    and the delivered-vs-raw gate compares stabilization, not stitching.
     """
+    source: str | Path
     source: str | Path
     start: float
     duration: float
@@ -47,6 +52,7 @@ class ClipSpec:
     fov: float = 120.0
     size: tuple[int, int] = (960, 720)
     profile: "CameraProfile | None" = None
+    stitch: object = None
 
 
 @dataclass(frozen=True)
@@ -118,7 +124,8 @@ def render_constant(spec: ClipSpec, dst: str | Path,
                                             pitch=spec.framing_pitch)],
             start=spec.start, duration=spec.duration, size=spec.size,
             preset=preset,
-            geometry=spec.profile.lens if spec.profile is not None else None)
+            geometry=spec.profile.lens if spec.profile is not None else None,
+            stitch=spec.stitch)
     return Path(dst)
 
 
@@ -180,8 +187,15 @@ def measure_sync(spec: ClipSpec, lags_ms=range(-200, 61, 10),
     tmp = Path(workdir) if workdir else Path(tempfile.mkdtemp())
     tmp.mkdir(parents=True, exist_ok=True)
     start = max(0.0, spec.start - pad_s)
+    # The scan renders a constant-framing baseline and tracks FAR-FIELD motion
+    # to correlate against gyro: sphere assembly is irrelevant to that, and
+    # the blend stitch is ~10x the cost of the legacy one at full sphere size.
+    # Force legacy here so sync measurement does not pay for stitching it
+    # cannot see. (Delivered-vs-raw gates still render the spec's own stitch.)
+    from steadycut.render.stitch import StitchSpec as _SS
     scan = replace(spec, start=start,
-                   duration=(spec.duration + spec.start - start + pad_s))
+                   duration=(spec.duration + spec.start - start + pad_s),
+                   stitch=_SS(method="legacy"))
     video = tmp / "sync_raw.mp4"
     render_constant(scan, video)
     traj = track_far(video)
@@ -317,7 +331,8 @@ def render_path(spec: ClipSpec, points, dst: str | Path,
     from steadycut.render.reframe import render as _render
     _render(spec.source, dst, points, start=spec.start,
             duration=spec.duration, size=spec.size, preset=preset,
-            geometry=spec.profile.lens if spec.profile is not None else None)
+            geometry=spec.profile.lens if spec.profile is not None else None,
+            stitch=spec.stitch)
     return Path(dst)
 
 
