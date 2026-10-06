@@ -2,7 +2,7 @@
 import numpy as np
 
 from steadycut.render.stitch import (GAIN_DEFAULT, StitchSpec, cache_dir,
-                                     deflare_frame, mask_path, track_gain_filter)
+                                     deflare_frame, mask_path)
 
 
 def test_mask_is_cached_and_binary_sized():
@@ -28,12 +28,6 @@ def test_deflare_field_is_zero_at_center_and_grows_to_rim():
 
 def test_gain_default_is_near_unity_and_bounded():
     assert all(0.9 < g < 1.1 for g in GAIN_DEFAULT)
-
-
-def test_gain_filter_names_all_three_channels():
-    f = track_gain_filter((1.016, 1.029, 1.043))
-    assert "lutrgb=" in f and all(f"c='{c}" in f or f"{c}='" in f
-                                  for c in "rgb")
 
 
 def test_stitch_spec_defaults_are_bench_geometry():

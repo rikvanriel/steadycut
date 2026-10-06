@@ -140,13 +140,6 @@ def measure_gain(source: str, t: float = 5.0) -> tuple:
     return gains
 
 
-def track_gain_filter(gain: tuple) -> str:
-    """Pointwise gain match for lens B (fast lutrgb)."""
-    gb, gg, gr = gain
-    return (f"lutrgb=r='clip(val*{gr:.4f},0,255)':"
-            f"g='clip(val*{gg:.4f},0,255)':b='clip(val*{gb:.4f},0,255)'")
-
-
 def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
                      start: float | None, duration: float | None,
                      workdir: Path, fps: str = "30000/1001") -> tuple[Path, Path]:
@@ -159,14 +152,32 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
     db = deflare_frame(spec.lens_fov_a, spec.deflare_poly)
     gb, gg, gr = gain
     a_out, b_out = workdir / "lensA.mp4", workdir / "lensB.mp4"
+
+    # Frame cap, not -t: an input-side -t was observed to be ignored (5568
+    # frames for a 3 s window), so bound each output by frame count instead.
+    import math
+    nframes = None
+    if duration is not None:
+        try:
+            from steadycut.render.reframe import source_fps as _fps
+            nframes = math.ceil(duration * (_fps(source) or 29.97)) + 5
+        except Exception:
+            nframes = None
     # [1:v] is consumed by TWO blends, so it must be split: a filter output
     # can feed only one link.
+    # setpts rebase is REQUIRED, not cosmetic: -ss as an input option leaves
+    # the original timestamps (~110 s) on the baked frames, while the ramp
+    # mask (looped still) and the sendcmd file both live at 0. The framesync
+    # inside maskedmerge then starves (a 3 s window burned 200+ CPU-min with
+    # zero bytes out). PTS-STARTPTS puts every input on the same clock.
     fc = (
         f"[0:v:0]format=gbrp[a0];[1:v]format=gbrp,split[df1][df2];"
-        f"[a0][df1]blend=all_mode=subtract,format=yuv444p[a];"
+        f"[a0][df1]blend=all_mode=subtract,format=yuv444p,"
+        f"setpts=PTS-STARTPTS[a];"
         f"[0:v:1]format=gbrp,lutrgb=r='clip(val*{gr:.4f},0,255)'"
         f":g='clip(val*{gg:.4f},0,255)':b='clip(val*{gb:.4f},0,255)'[b0];"
-        f"[b0][df2]blend=all_mode=subtract,format=yuv444p[b]")
+        f"[b0][df2]blend=all_mode=subtract,format=yuv444p,"
+        f"setpts=PTS-STARTPTS[b]")
     args = ["ffmpeg", "-hide_banner", "-v", "error", "-y"]
     # -ss/-t are INPUT options: they must sit immediately before the source
     # they bound, or ffmpeg applies -t to the still-image input instead.
@@ -178,39 +189,33 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
     args += ["-framerate", fps, "-loop", "1", "-i", str(db),
              "-filter_complex", fc,
              "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast",
-             "-crf", "16", "-pix_fmt", "yuv444p", str(a_out),
+             "-crf", "16", "-pix_fmt", "yuv444p"]
+    if nframes is not None:
+        args += ["-frames:v", str(nframes)]
+    args += [str(a_out),
              "-map", "[b]", "-c:v", "libx264", "-preset", "ultrafast",
-             "-crf", "16", "-pix_fmt", "yuv444p", str(b_out)]
+             "-crf", "16", "-pix_fmt", "yuv444p"]
+    if nframes is not None:
+        args += ["-frames:v", str(nframes)]
+    args += [str(b_out)]
     subprocess.run(args, check=True)
     return a_out, b_out
 
 
 def sphere_filtergraph(spec: StitchSpec, gain: tuple,
                        sphere_size=(2048, 1024)) -> tuple[str, Path]:
-    """Two-pass sphere assembly. Inputs: [0:v:0] front track, [0:v:1] back
-    track, [1:v] ramp mask, [2:v] deflare field. The back track gets the
-    per-clip gain match; both tracks get the static blue-deflare subtract;
-    each lens is projected with its own calibrated FOV; maskedmerge joins
-    them on [s]. Returns (filter snippet, mask path)."""
+    """Two-pass sphere assembly over BAKED lens tracks (see bake_lens_tracks:
+    deflare + gain already applied). Inputs: [0:v] lens A equirect source,
+    [1:v] lens B equirect source, [2:v] ramp mask. Each lens is projected
+    with its own calibrated FOV; maskedmerge joins them on [s].
+    Returns (filter snippet, mask path)."""
     w, h = sphere_size
     mask = mask_path(spec.lens_fov_a, spec.ramp_deg, w, h)
-    db = deflare_frame(spec.lens_fov_a, spec.deflare_poly)
     gb, gg, gr = gain
-    # Per-track pre-rendering is a PERFORMANCE requirement, not a style
-    # choice: subtracting a 2880^2 deflare field inside the sphere graph
-    # costs ~30x a single-pass render (a 28 s baseline rendered 80 MB of
-    # 350 MB in 40 min at 10 cores), because every frame round-trips
-    # gbrp -> blend -> yuv444p at full lens resolution. The caller bakes
-    # the deflared+gain-matched lens tracks to temp files with plain ffmpeg
-    # filters instead, and this graph reads them as ordinary video.
     fg = (
-        f"[0:v:0]format=yuv444p[da];"
-        f"[0:v:1]lutrgb=r='clip(val*{gr:.4f},0,255)'"
-        f":g='clip(val*{gg:.4f},0,255)':b='clip(val*{gb:.4f},0,255)',"
-        f"format=yuv444p[db2];"
-        f"[da]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_a}"
+        f"[0:v]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_a}"
         f":iv_fov={spec.lens_fov_a}:w={w}:h={h},format=yuv444p[c];"
-        f"[db2]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_b}"
+        f"[1:v]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_b}"
         f":iv_fov={spec.lens_fov_b}:yaw=180:w={w}:h={h},format=yuv444p[d];"
-        f"[1:v]format=gbrp[e];[c][d][e]maskedmerge,format=yuv444p[s]")
+        f"[2:v]format=gbrp[e];[c][d][e]maskedmerge,format=yuv444p[s]")
     return fg, mask

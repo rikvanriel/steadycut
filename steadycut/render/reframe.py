@@ -410,20 +410,30 @@ def render(
         else:
             filtergraph = f"{STACK_ORDERS[order]}{reproject}[v]"
         args = ["ffmpeg", "-hide_banner", "-y"]
-        if start is not None:
+        # The seek bounds the SOURCE input. In blend mode the baked lens
+        # tracks are already windowed (seeking them again seeks past EOF and
+        # starves the graph); only the audio source takes -ss/-t (blend_seek).
+        if start is not None and not use_blend:
             args += ["-ss", f"{snap_to_frame(start, source):g}"]
-        if duration is not None:
+        if duration is not None and not use_blend:
             args += ["-t", f"{duration:g}"]
         if use_blend:
             # Baked lens tracks are ordinary video inputs [0:v]/[1:v]; the
             # mask is a looped still [2:v] pinned to the video rate (at the
             # 25 fps default the maskedmerge frame-sync churns). The source
             # rides along as [3] for audio only (the bakes carry no audio).
+            # The source rides along sought and bounded like the video: an
+            # unseeked full-file audio input outlives the video and the mux
+            # never finishes.
+            blend_seek = []
+            if start is not None:
+                blend_seek += ["-ss", f"{snap_to_frame(start, source):g}"]
+            if duration is not None:
+                blend_seek += ["-t", f"{duration:g}"]
             args += ["-i", str(lens_a), "-i", str(lens_b),
                      "-loop", "1", "-framerate",
                      f"{source_fps(str(source)):g}",
-                     "-i", str(mask_path),
-                     "-i", str(source)]
+                     "-i", str(mask_path)] + blend_seek + ["-i", str(source)]
         else:
             args += ["-i", str(source)]
         args += [
@@ -434,12 +444,27 @@ def render(
     else:
         filtergraph = reproject
         args = ["ffmpeg", "-hide_banner", "-y"]
-        if start is not None:
+        # The seek bounds the SOURCE input. In blend mode the baked lens
+        # tracks are already windowed (seeking them again seeks past EOF and
+        # starves the graph); only the audio source takes -ss/-t (blend_seek).
+        if start is not None and not use_blend:
             args += ["-ss", f"{start:g}"]
         if duration is not None:
             args += ["-t", f"{duration:g}"]
         args += ["-i", str(source), "-vf", filtergraph]
 
+    # Output frame cap: graphs with infinite loop inputs (ramp mask) and
+    # repeat-on-EOF joins (maskedmerge) do not terminate on their own -- a 3 s
+    # window burned 200+ CPU-min with zero bytes out. Bound the output by
+    # frame count whenever the duration is known (same lesson as the bake).
+    if duration is not None:
+        import math as _math
+        try:
+            _nframes = _math.ceil(duration * (source_fps(str(source)) or 29.97)) + 5
+        except Exception:
+            _nframes = None
+        if _nframes is not None:
+            args += ["-frames:v", str(_nframes)]
     args += [
         "-c:v", "libx264",
         "-preset", preset,
