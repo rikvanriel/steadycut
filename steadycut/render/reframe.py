@@ -179,8 +179,9 @@ def build_command_file(path: list[ControlPoint], per_frame: bool = True,
 
     if len(points) == 1:
         only = points[0]
+        yaw = (only.yaw + 180.0) % 360.0 - 180.0  # v360 range, see below
         return (
-            f"{only.t:.6f} v360 yaw {only.yaw:.4f};\n"
+            f"{only.t:.6f} v360 yaw {yaw:.4f};\n"
             f"{only.t:.6f} v360 pitch {only.pitch:.4f};\n"
             f"{only.t:.6f} v360 roll {only.roll:.4f};\n"
             f"{only.t:.6f} v360 h_fov {only.fov:.4f};\n"
@@ -192,8 +193,20 @@ def build_command_file(path: list[ControlPoint], per_frame: bool = True,
         times = np.arange(0.0, ts[-1] + 1e-9, 1.0 / fps)
         for name, attr in (("yaw", "yaw"), ("pitch", "pitch"),
                            ("roll", "roll"), ("h_fov", "fov")):
-            vals = np.interp(times, ts,
-                             np.array([getattr(p, attr) for p in points], dtype=float))
+            vals = np.array([getattr(p, attr) for p in points], dtype=float)
+            if name in ("yaw", "pitch", "roll"):
+                # Angles wrap: interpolate on the unwrapped series (a trend
+                # that ramps through +-180 would otherwise snap across the
+                # cut mid-window), then wrap back into v360's range. v360
+                # hard-errors beyond +-180 (measured: yaw=195 refuses with
+                # "Numerical result out of range"), so the wrap is load
+                # bearing, not cosmetic. In-range values pass through
+                # unchanged, so legacy paths are bit-identical.
+                vals = np.unwrap(np.radians(vals))
+                interp = np.interp(times, ts, vals)
+                vals = (np.degrees(interp) + 180.0) % 360.0 - 180.0
+            else:
+                vals = np.interp(times, ts, vals)
             lines.extend(f"{tt:.6f} v360 {name} {vv:.4f};" for tt, vv in zip(times, vals))
         return "\n".join(lines) + "\n"
 
@@ -317,7 +330,8 @@ def render(
             "gain_measured": gain_measured,
             "lens_fov": [stitch.lens_fov_a, stitch.lens_fov_b],
             "ramp_deg": stitch.ramp_deg,
-            "deflare_poly": list(stitch.deflare_poly)}
+            "deflare_poly": list(stitch.deflare_poly),
+            "optics_id": getattr(stitch, "optics_id", None)}
     else:
         stitch_record = {"method": "legacy"}
     render.stitch_record = stitch_record

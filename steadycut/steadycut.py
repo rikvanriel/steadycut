@@ -55,9 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--camera", default=None, metavar="MODEL",
                     help="force the camera model when the container carries "
                          "no recognizable signature")
-    ap.add_argument("--corner", type=float, default=0.15,
-                    help="gyro correction corner frequency in Hz (default "
-                         "0.15): motion faster than this is removed; lower is "
+    ap.add_argument("--corner", type=float, default=None,
+                    help="gyro correction corner frequency in Hz (policy "
+                         "default when omitted: 0.15, 0.02 for ski): motion faster "
+                         "than this is removed; lower is "
                          "steadier but lags the rider's look direction. The "
                          "default is measured: 0.15 beat 0.5 on every window "
                          "of a multi-clip validation, and 0.05 bought nothing "
@@ -268,9 +269,39 @@ def main(argv=None) -> int:
     print(f"CLI| framing pitch {pitch:.1f} "
           f"(policy {policy.name}, mount {policy.mount}, "
           f"follows {policy.follows})")
+    corner = a.corner if a.corner is not None else policy.corner_hz or 0.15
+    if corner != 0.15 or policy.corner_hz is not None:
+        print(f"CLI| corner {corner} Hz"
+              + (" (policy default)" if a.corner is None else ""))
     from steadycut.render.stitch import StitchSpec
     stitch = (StitchSpec(method="blend") if a.stitch == "blend"
               else StitchSpec(method="legacy"))
+    fresh_fit = None
+    if a.stitch == "blend":
+        # Per-recording optics: serial -> profile -> spec. No serial (model
+        # fallback, missing trailer) serves the bench defaults and says so —
+        # optics are never shared across bodies.
+        import dataclasses
+        serial = ident.get("serial")
+        serial_known = (ident.get("via") == "trailer" and bool(serial)
+                        and serial != "missing")
+        if serial_known:
+            from steadycut.render.optics_select import select_optics
+            prof, fresh_fit = select_optics(
+                a.source, serial, ident.get("fw"), serial_known)
+            if prof.get("fov_a") and prof.get("fov_b"):
+                stitch = dataclasses.replace(
+                    stitch, lens_fov_a=float(prof["fov_a"]),
+                    lens_fov_b=float(prof["fov_b"]),
+                    optics_id=prof.get("id"))
+            if prof.get("deflare_poly"):
+                stitch = dataclasses.replace(
+                    stitch, deflare_poly=tuple(prof["deflare_poly"]))
+            print(f"CLI| optics {prof.get('id') or 'fresh fit'} "
+                  f"(fresh={fresh_fit})")
+        else:
+            print("CLI| optics: no body serial, bench defaults (no registry)")
+    cert["optics"] = {"id": stitch.optics_id, "fresh_fit": fresh_fit}
     spec = ClipSpec(source=a.source, start=a.start, duration=a.dur,
                     framing_pitch=pitch, fov=fov, size=size, profile=profile,
                     stitch=stitch)
@@ -297,10 +328,16 @@ def main(argv=None) -> int:
     # as its trend); measured from the accel median over the clip start,
     # which holds for tens of minutes (drift_check: gyro vs gravity ~2 deg
     # over 25 min). Pitch is deliberately untouched: framing owns it.
+    # Travel policies put yaw on its own leash (the ski policy's measured
+    # 0.02 Hz): sustained turns pass, look-arounds do not. Gaze policies pass
+    # no leash and keep the legacy single-tau path bit for bit.
+    yaw_corner = policy.yaw_corner_hz
+    if yaw_corner is not None:
+        print(f"CLI| travel yaw leash {yaw_corner} Hz (policy {policy.name})")
     out = Path(a.out) if a.out else Path(f"clip_{int(a.start)}s.mp4")
     try:
         pts = build_gyro_path(spec, stamp_offset_ms=offset_ms,
-                              corner_hz=a.corner)
+                              corner_hz=corner, yaw_corner_hz=yaw_corner)
         if a.no_level:
             cert["level"] = {"applied": False, "reason": "flag"}
         else:
@@ -427,7 +464,8 @@ def main(argv=None) -> int:
     if abs(r) > 0.5:
         print("CLI| WARN correction unverified: residual still gyro-locked")
 
-    cert["corner_hz"] = a.corner
+    cert["corner_hz"] = corner
+    cert["yaw_corner_hz"] = yaw_corner  # None = legacy single-tau path
     cert_path = out.with_suffix(".cert.json")
     cert_path.write_text(json.dumps(cert, indent=1, default=str))
     print(f"CLI| certificate {cert_path}")

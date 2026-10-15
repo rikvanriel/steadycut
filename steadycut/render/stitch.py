@@ -55,6 +55,7 @@ class StitchSpec:
     ramp_deg: float = RAMP_DEG
     deflare_poly: tuple = DEFLARE_POLY
     gain: tuple | None = None  # None = measure per clip; else (B,G,R) + flag
+    optics_id: str | None = None  # registry optics profile serving this render
 
 
 def mask_path(lens_fov_a: float, ramp_deg: float,
