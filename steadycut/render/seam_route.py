@@ -20,8 +20,11 @@ def _lam(diff):
 
 
 def route_seam(eqA, eqB, seam_x, halfw=64):
-    """Route one seam. eqA/eqB: full equirects (BGR uint8). Returns polyline
-    (pano-x per row float) lying inside [seam_x-halfw, seam_x+halfw]."""
+    """Route one seam. eqA/eqB: full equirects (BGR uint8) in SHARED sphere
+    coordinates — the caller rolls production B tracks (yaw=180) by half
+    width first; unaligned strips compare opposite sides (measured).
+    Returns polyline (pano-x per row float) inside
+    [seam_x-halfw, seam_x+halfw]."""
     x0 = max(0, seam_x - halfw)
     x1 = min(eqA.shape[1], seam_x + halfw)
     a = eqA[:, x0:x1].astype(np.float32)

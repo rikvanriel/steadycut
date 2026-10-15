@@ -11,6 +11,15 @@ equirect x maps linearly to yaw, x=0 front; sphere weight wgt is 1.0 on
 lens A's hemisphere. The mask PNG written from it is 255 at sphere front —
 where the graph, whose B track carries yaw=180 and whose maskedmerge white
 selects the second input, shows B. Both halves pinned in tests.
+
+Track identity (measured, do not re-derive from prose): "A"/"B" below are
+GRAPH roles, not hardware front/rear. Track 0:v:0 is served with yaw=0
+(content centered x=1024) and calibrated by spec.lens_fov_a; track 0:v:1
+with yaw=180 (centered x=0) by spec.lens_fov_b. The FOV fit assigns in the
+same order (its A/B inputs are track 0/1), and lens_to_sphere(back=True)
+maps track-1 pixels for the leveling frames. All three agree; only the
+words "front"/"rear" are untrusted. Order-swap probe (185,183.5) vs
+(183.5,185) scores 3.5/11.6 vs 4.0/11.0 — second-order either way.
 """
 from __future__ import annotations
 
