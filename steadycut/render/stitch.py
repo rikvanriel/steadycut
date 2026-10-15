@@ -59,11 +59,18 @@ class StitchSpec:
 
 def mask_path(lens_fov_a: float, ramp_deg: float,
               w: int = 2048, h: int = 1024) -> Path:
-    """Cached blend ramp mask: 255 where lens A owns, 0 where B owns.
+    """Cached blend ramp mask: 255 at sphere front, 0 at sphere back.
 
     Generated analytically from sphere yaw (sphere_maps.blend_weight), NOT
     with the old geq radial ramp, which wandered ~220 px off-meridian by row
-    256. Same polarity and serving graph; new cache key (v2).
+    256. Same polarity as the retired bytes and the same serving graph; new
+    cache key (v2).
+
+    Polarity, carefully: in sphere_filtergraph the B track carries yaw=180,
+    so B's lens center sits at x=0 and A's at x=1024; maskedmerge white
+    selects the SECOND input. The PNG is therefore 255 where the graph shows
+    B (front) and 0 where it shows A — proven by the delivered blend renders
+    and by the 7.2-vs-76.5 inverted-merge probe, not by the filter docs.
     """
     from steadycut.render.sphere_maps import MASK_VERSION, blend_weight
     dst = (cache_dir() /
@@ -203,6 +210,75 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
     args += [str(b_out)]
     subprocess.run(args, check=True)
     return a_out, b_out
+
+
+def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
+                 gain: tuple | None = None,
+                 sphere_size=(2048, 1024)) -> Path:
+    """One blend-graph equirect still (review/instrument use, not delivery).
+
+    Per-lens v360 fisheye->equirect with each lens's own FOV (the same two
+    passes sphere_filtergraph runs), deflare + gain applied like the bake,
+    joined by the analytic mask. reframe emits flat only, so scoreboard and
+    eye work that needs the sphere comes here.
+    """
+    import numpy as np
+    from steadycut.render.sphere_maps import blend_weight
+    cv2 = __import__("cv2")
+    w, h = sphere_size
+    g = gain or GAIN_DEFAULT
+    gb, gg, gr = g
+    with tempfile.TemporaryDirectory() as tmp:
+        for trk in (0, 1):
+            out = f"{tmp}/lens{trk}.png"
+            subprocess.run(
+                f"ffmpeg -hide_banner -v error -ss {t} -i {source} "
+                f"-map 0:v:{trk} -frames:v 1 -y {out}",
+                shell=True, check=True, timeout=120)
+        a = cv2.imread(f"{tmp}/lens0.png")
+        b = cv2.imread(f"{tmp}/lens1.png")
+        # deflare (blue subtract) + gain, mirroring bake_lens_tracks.
+        # The field stores excess in the BLUE channel: read color and take
+        # [:,:,0], never grayscale (0.114*B rounds single-digit excess to 0).
+        db = cv2.imread(str(deflare_frame(spec.lens_fov_a,
+                                          spec.deflare_poly)))[:, :, 0]
+        if db.shape[:2] != a.shape[:2]:
+            db = cv2.resize(db, (a.shape[1], a.shape[0]))
+        a = a.astype(np.float32)
+        a[:, :, 0] = np.clip(a[:, :, 0] - db.astype(np.float32), 0, 255)
+        b = np.clip(b.astype(np.float32) *
+                    np.array(g, np.float32), 0, 255)  # g is (B,G,R), BGR order
+        cv2.imwrite(f"{tmp}/pa.png", a.astype(np.uint8))
+        cv2.imwrite(f"{tmp}/pb.png", b.astype(np.uint8))
+        eq = []
+        for tag, fov, yaw in (("pa", spec.lens_fov_a, 0),
+                              ("pb", spec.lens_fov_b, 180)):
+            p = f"{tmp}/eq_{tag}.png"
+            eq.append(p)
+            subprocess.run(
+                f"ffmpeg -hide_banner -v error -i {tmp}/{tag}.png -vf "
+                f"\"v360=input=fisheye:output=e:ih_fov={fov}:iv_fov={fov}"
+                f":yaw={yaw}:w={w}:h={h}\" -frames:v 1 -y {p}",
+                shell=True, check=True, timeout=120)
+        ea = cv2.imread(eq[0]).astype(np.float32)
+        eb = cv2.imread(eq[1]).astype(np.float32)
+        wgt, _ = blend_weight(w, h, spec.ramp_deg, spec.lens_fov_a)
+        w3 = wgt[:, :, None]
+        if ea.shape[:2] != (h, w):
+            ea = cv2.resize(ea, (w, h))
+        if eb.shape[:2] != (h, w):
+            eb = cv2.resize(eb, (w, h))
+        # Merge polarity mirrors the serving graph: maskedmerge white selects
+        # the SECOND input ([c][d][e] = A, B, mask, so 255 shows B). The mask
+        # PNG is 255 at sphere front (x=0) where B's yaw-180 equirect carries
+        # the content; wgt is 1.0 on A's sphere hemisphere. Both conventions
+        # are pinned in test_sphere_maps/test_stitch — touch neither blindly.
+        img = np.clip(eb * w3 + ea * (1 - w3), 0, 255).astype(np.uint8)
+        dst = (cache_dir() /
+               f"still_{Path(source).stem}_t{t:g}_"
+               f"F{spec.lens_fov_a:g}-{spec.lens_fov_b:g}.png")
+        cv2.imwrite(str(dst), img)
+        return dst
 
 
 def sphere_filtergraph(spec: StitchSpec, gain: tuple,

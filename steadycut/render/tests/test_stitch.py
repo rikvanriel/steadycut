@@ -15,6 +15,10 @@ def test_mask_is_cached_and_sized_with_a_ramp():
     assert img.shape == (1024, 2048)
     # ramp, not a step: mid values exist between the plateaus
     assert 0 < int((img == 128).sum()) + int(((img > 10) & (img < 245)).sum())
+    # Graph polarity pin: 255 at sphere front (x=0, where the yaw-180 B
+    # track's center sits), 0 at x=1024 (A's center). maskedmerge white
+    # selects the second input — flip either half and the blend inverts.
+    assert img[512, 0] == 255 and img[512, 1024] == 0
 
 
 def test_deflare_field_is_zero_at_center_and_grows_to_rim():

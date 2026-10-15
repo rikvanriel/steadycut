@@ -7,8 +7,10 @@ canvas while v360 maps iv_fov over the height. Everything here is pure
 numpy on the equirect grid, both lenses, version-tagged cache keys.
 
 Conventions (match the serving graph in stitch.sphere_filtergraph):
-equirect x maps linearly to yaw, x=0 front; mask 255 where lens A (front)
-owns, 0 where lens B owns; seams at yaw +-90 deg (x=w/4, 3w/4).
+equirect x maps linearly to yaw, x=0 front; sphere weight wgt is 1.0 on
+lens A's hemisphere. The mask PNG written from it is 255 at sphere front —
+where the graph, whose B track carries yaw=180 and whose maskedmerge white
+selects the second input, shows B. Both halves pinned in tests.
 """
 from __future__ import annotations
 
