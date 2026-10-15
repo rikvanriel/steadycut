@@ -278,10 +278,10 @@ def main(argv=None) -> int:
               else StitchSpec(method="legacy"))
     fresh_fit = None
     if a.stitch == "blend":
+        import dataclasses
         # Per-recording optics: serial -> profile -> spec. No serial (model
         # fallback, missing trailer) serves the bench defaults and says so —
         # optics are never shared across bodies.
-        import dataclasses
         serial = ident.get("serial")
         serial_known = (ident.get("via") == "trailer" and bool(serial)
                         and serial != "missing")
@@ -302,6 +302,25 @@ def main(argv=None) -> int:
         else:
             print("CLI| optics: no body serial, bench defaults (no registry)")
     cert["optics"] = {"id": stitch.optics_id, "fresh_fit": fresh_fit}
+    cert["leveling"] = {"applied": False, "reason": "legacy or unmeasured"}
+    if a.stitch == "blend":
+        # Seam softener: one merged still at the window start, step measured,
+        # correction frames onto the spec (cut leveling). Refusals ride the cert.
+        try:
+            from steadycut.render.stitch import (leveling_frames,
+                                                 measure_step, sphere_still)
+            still = sphere_still(a.source, stitch, a.start)
+            steps = measure_step(still)
+            pp, nn, lcert = leveling_frames(stitch, steps)
+            if pp is not None:
+                stitch = dataclasses.replace(stitch, leveling=(pp, nn))
+            cert["leveling"] = lcert
+            print(f"CLI| leveling applied={lcert['applied']} "
+                  f"worst={max(abs(v) for s in steps.values() for v in s):.1f} DN")
+        except Exception as exc:
+            cert["leveling"] = {"applied": False,
+                                "reason": f"measurement failed: {exc}"}
+            print(f"CLI| leveling skipped ({exc})")
     spec = ClipSpec(source=a.source, start=a.start, duration=a.dur,
                     framing_pitch=pitch, fov=fov, size=size, profile=profile,
                     stitch=stitch)

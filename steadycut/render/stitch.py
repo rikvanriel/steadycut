@@ -56,10 +56,11 @@ class StitchSpec:
     deflare_poly: tuple = DEFLARE_POLY
     gain: tuple | None = None  # None = measure per clip; else (B,G,R) + flag
     optics_id: str | None = None  # registry optics profile serving this render
+    leveling: tuple | None = None  # (pos_frame, neg_frame) seam softener or None
 
 
 def mask_path(lens_fov_a: float, ramp_deg: float,
-              w: int = 2048, h: int = 1024) -> Path:
+              w: int = 2048, h: int = 1024, fov_b: float | None = None) -> Path:
     """Cached blend ramp mask: 255 at sphere front, 0 at sphere back.
 
     Generated analytically from sphere yaw (sphere_maps.blend_weight), NOT
@@ -74,12 +75,13 @@ def mask_path(lens_fov_a: float, ramp_deg: float,
     and by the 7.2-vs-76.5 inverted-merge probe, not by the filter docs.
     """
     from steadycut.render.sphere_maps import MASK_VERSION, blend_weight
+    fb = fov_b if fov_b is not None else LENS_FOV_B
     dst = (cache_dir() /
-           f"mask_{MASK_VERSION}_F{lens_fov_a:g}_R{ramp_deg:g}_{w}x{h}.png")
+           f"mask_{MASK_VERSION}_F{lens_fov_a:g}-{fb:g}_R{ramp_deg:g}_{w}x{h}.png")
     if dst.exists():
         return dst
     import numpy as np
-    wgt, _ = blend_weight(w, h, ramp_deg, lens_fov_a)
+    wgt, _ = blend_weight(w, h, ramp_deg, lens_fov_a, fb)
     cv2 = __import__("cv2")
     cv2.imwrite(str(dst), (wgt * 255).astype(np.uint8))
     return dst
@@ -175,20 +177,31 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
         except Exception:
             nframes = None
     # [1:v] is consumed by TWO blends, so it must be split: a filter output
-    # can feed only one link.
+    # can feed exactly ONE link.
     # setpts rebase is REQUIRED, not cosmetic: -ss as an input option leaves
     # the original timestamps (~110 s) on the baked frames, while the ramp
     # mask (looped still) and the sendcmd file both live at 0. The framesync
     # inside maskedmerge then starves (a 3 s window burned 200+ CPU-min with
     # zero bytes out). PTS-STARTPTS puts every input on the same clock.
+    lv = ""
+    if spec.leveling is not None:
+        # Seam softener on track B (deflare precedent for asymmetric): add
+        # the positive lobe, subtract the negative, around the gain stage.
+        lv = ("[b0][lvP]blend=all_mode=addition,format=yuv444p[bx];"
+              "[bx][lvN]blend=all_mode=subtract,format=yuv444p[by];")
     fc = (
         f"[0:v:0]format=gbrp[a0];[1:v]format=gbrp,split[df1][df2];"
+        + (f"[2:v]format=gbrp[lvP];[3:v]format=gbrp[lvN];"
+           if spec.leveling is not None else "") +
         f"[a0][df1]blend=all_mode=subtract,format=yuv444p,"
         f"setpts=PTS-STARTPTS[a];"
         f"[0:v:1]format=gbrp,lutrgb=r='clip(val*{gr:.4f},0,255)'"
         f":g='clip(val*{gg:.4f},0,255)':b='clip(val*{gb:.4f},0,255)'[b0];"
-        f"[b0][df2]blend=all_mode=subtract,format=yuv444p,"
-        f"setpts=PTS-STARTPTS[b]")
+        + (f"{lv}[by][df2]blend=all_mode=subtract,format=yuv444p,"
+           f"setpts=PTS-STARTPTS[b]"
+           if spec.leveling is not None else
+           f"[b0][df2]blend=all_mode=subtract,format=yuv444p,"
+           f"setpts=PTS-STARTPTS[b]"))
     args = ["ffmpeg", "-hide_banner", "-v", "error", "-y"]
     # -ss/-t are INPUT options: they must sit immediately before the source
     # they bound, or ffmpeg applies -t to the still-image input instead.
@@ -197,8 +210,13 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
     if duration is not None:
         args += ["-t", f"{duration:g}"]
     args += ["-i", str(source)]
-    args += ["-framerate", fps, "-loop", "1", "-i", str(db),
-             "-filter_complex", fc,
+    args += ["-framerate", fps, "-loop", "1", "-i", str(db)]
+    if spec.leveling is not None:
+        # Looped stills pinned to the video rate (same churn trap as the
+        # deflare input); setpts rebase downstream puts them on clock 0.
+        args += ["-framerate", fps, "-loop", "1", "-i", str(spec.leveling[0]),
+                 "-framerate", fps, "-loop", "1", "-i", str(spec.leveling[1])]
+    args += ["-filter_complex", fc,
              "-map", "[a]", "-c:v", "libx264", "-preset", "ultrafast",
              "-crf", "16", "-pix_fmt", "yuv444p"]
     if nframes is not None:
@@ -282,6 +300,83 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
         return dst
 
 
+def measure_step(still_path, width=2048, seams=(512, 1536),
+                 plateau=(10, 40)) -> dict:
+    """Tone step across each seam: right-plateau median minus left, per
+    channel (B,G,R signed). Plateaus avoid the ramp core."""
+    import numpy as np
+    cv2 = __import__("cv2")
+    img = cv2.imread(str(still_path)).astype(np.float32)
+    h, w = img.shape[:2]
+    out = {}
+    for s in seams:
+        x = int(s * w / width)
+        p0a, p0b, p1a, p1b = x - plateau[1], x - plateau[0], x + plateau[0], \
+            x + plateau[1]
+        left = np.median(img[:, p0a:p0b].reshape(-1, 3), axis=0)
+        right = np.median(img[:, p1a:p1b].reshape(-1, 3), axis=0)
+        out[s] = [round(float(v), 2) for v in (right - left)]
+    return out
+
+
+STEP_LIMIT_DN = 8.0  # larger means geometry is wrong: fall back, don't paint
+
+
+def leveling_frames(spec: StitchSpec, steps: dict, size=2880, w=2048,
+                    feather_px=48) -> tuple:
+    """Seam-ramp correction frames for the lens-B track (deflare-style).
+
+    steps: {seam_x: [dB, dG, dR]} in sphere pixels at width w. The full step
+    rides on track B (asymmetric, deflare precedent): corr = s*f, f a cosine
+    falloff peaking at the seam, split into pos/neg unsigned frames for the
+    add/subtract blends. Returns (pos_path, neg_path, cert); steps above
+    STEP_LIMIT_DN fall back (no frames + flag, never paint broken geometry).
+    seam_xs may be a per-row polyline array (routed seams, Phase 3).
+    """
+    import numpy as np
+    from steadycut.render.sphere_maps import lens_to_sphere
+    cv2 = __import__("cv2")
+    cert = {"seams": {str(k): v for k, v in steps.items()}}
+    worst = max(abs(v) for s in steps.values() for v in s)
+    if worst > STEP_LIMIT_DN:
+        cert.update({"applied": False,
+                     "reason": f"step {worst:.1f} DN > {STEP_LIMIT_DN} DN: "
+                               "geometry suspect, leveling refused"})
+        return None, None, cert
+    sx, _, valid = lens_to_sphere(spec.lens_fov_b, size=size, w=w,
+                                  h=w // 2, back=True)
+    # Per-seam feathers (never one combined f: steps differ per seam and a
+    # shared feather mixes them — measured: 1536's +6 leaked into 512's -5).
+    # Factor 1, deliberately NOT 2: a feather-localized op softens the seam-
+    # center hairline but cannot move plateaus (and symmetric ± cancels at
+    # w=0.5). Plateau steps belong to per-clip gain matching; this only
+    # takes the edge off the center. f peaks 1.0 at the seam.
+    corr = np.zeros((size, size, 3), np.float32)
+    for s, st in steps.items():
+        if np.ndim(s) == 0:
+            d = np.abs(sx - float(s) * w / 2048)
+        else:
+            arr = np.asarray(s, dtype=float)
+            rows = np.clip((np.arange(sx.shape[0]) * len(arr)
+                            // sx.shape[0]), 0, len(arr) - 1)
+            d = np.abs(sx - arr[rows][:, None] * w / 2048)
+        d = np.minimum(d, w - d)  # wrap at the x=0 meridian
+        f = np.where(d < feather_px,
+                     0.5 * (1 + np.cos(np.pi * d / feather_px)), 0.0)
+        f = np.where(valid, f, 0.0)
+        corr += np.array(st, np.float32) * f[:, :, None]
+    pos = np.clip(corr, 0, 255).astype(np.uint8)
+    neg = np.clip(-corr, 0, 255).astype(np.uint8)
+    key = (f"{spec.lens_fov_b:g}_{len(steps)}seam_"
+           + "_".join(f"{v:+.1f}" for s in steps.values() for v in s))
+    pp = cache_dir() / f"level_pos_{key}_{size}.png"
+    np_ = cache_dir() / f"level_neg_{key}_{size}.png"
+    cv2.imwrite(str(pp), pos)
+    cv2.imwrite(str(np_), neg)
+    cert.update({"applied": True, "worst_dn": round(float(worst), 2)})
+    return pp, np_, cert
+
+
 def sphere_filtergraph(spec: StitchSpec, gain: tuple,
                        sphere_size=(2048, 1024)) -> tuple[str, Path]:
     """Two-pass sphere assembly over BAKED lens tracks (see bake_lens_tracks:
@@ -290,7 +385,7 @@ def sphere_filtergraph(spec: StitchSpec, gain: tuple,
     with its own calibrated FOV; maskedmerge joins them on [s].
     Returns (filter snippet, mask path)."""
     w, h = sphere_size
-    mask = mask_path(spec.lens_fov_a, spec.ramp_deg, w, h)
+    mask = mask_path(spec.lens_fov_a, spec.ramp_deg, w, h, spec.lens_fov_b)
     gb, gg, gr = gain
     fg = (
         f"[0:v]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_a}"

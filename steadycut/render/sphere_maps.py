@@ -76,6 +76,35 @@ def blend_weight(w=2048, h=1024, ramp_deg=4.0, fov_a=182.2, fov_b=180.6,
     return wgt.astype(np.float32), valid
 
 
+def lens_to_sphere(fov, size=2880, w=2048, h=1024, back=False):
+    """Sphere coords per lens pixel (inverse of build_maps).
+
+    For each fisheye pixel: equidistant-inverse to ray, then equirectangular
+    projection. Returns (sx, sy) float32 + valid (inside the lens circle).
+    Lets sphere-space corrections (seam ramps) ride on lens tracks. C scales
+    with the raster (angular geometry is size-independent); production lens
+    frames are always 2880, matching build_maps' constant.
+    """
+    C = size / 2.0
+    f = C / (np.radians(fov) / 2)
+    ys, xs = np.mgrid[0:size, 0:size].astype(np.float64)
+    ox, oy = xs - C, ys - C
+    n = np.hypot(ox, oy)
+    inc = n / f
+    valid = n <= C
+    s = np.sin(np.minimum(inc, np.pi)) / np.maximum(n, 1e-12)
+    dx = np.where(back, -ox * s, ox * s)
+    dy = -oy * s
+    dz = np.where(back, -np.cos(np.minimum(inc, np.pi)),
+                  np.cos(np.minimum(inc, np.pi)))
+    norm = np.sqrt(dx * dx + dy * dy + dz * dz) + 1e-12
+    az = np.arctan2(dx / norm, dz / norm)
+    el = np.arcsin(np.clip(dy / norm, -1, 1))
+    sx = ((az / (2 * np.pi)) % 1.0 * w).astype(np.float32)
+    sy = ((0.5 - el / np.pi) * h).astype(np.float32)
+    return sx, sy, valid
+
+
 def build_maps(w=2048, h=1024, fov_a=182.2, fov_b=180.6, feather_deg=3.0):
     """Per-lens fisheye remap tables + incidence weight (lifts select_source).
 
