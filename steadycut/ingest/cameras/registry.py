@@ -69,8 +69,12 @@ def describe(serial: str) -> dict:
     reported as not usable rather than trusted because it looks present.
     """
     data = store.entry(serial)
+    optics = optics_for(serial, data.get("fw") if data else None) if data else []
+    extra = {}
+    if optics:
+        extra["optics"] = [p.get("id", "?") for p in optics]
     if data and axis_map_for(serial) is not None:
-        return {"serial": serial, "known": True, **data}
+        return {"serial": serial, "known": True, **data, **extra}
     if data:
         return {"serial": serial, "known": False, **data,
                 "action": ("this body is registered but has no usable axis map "
@@ -103,6 +107,93 @@ def record_measured(key: str, *, model: str | None = None,
     if note is not None:
         fields["note"] = note
     return store.upsert(key, fields)
+
+
+OPTICS_FOV_EPS = 0.25  # dedup: fits closer than this are the same cover
+
+
+def _optics_usable_key(key: str) -> bool:
+    """Optics are strictly per-body. The file cache defaults a missing serial
+    to the literal "missing" and record_measured falls back to model names;
+    both would share one optics profile across bodies, i.e. a guess."""
+    return bool(key) and key != "missing" and not key.startswith("model:")
+
+
+def optics_for(key: str, fw: str | None = None) -> list:
+    """Stored optics profiles for a body, or [] when none may be reused.
+
+    [] covers: never registered, legacy entry without optics, refused key,
+    and firmware mismatch (same rule as the axis map — optics measured under
+    a different firmware are treated as absent). Never a guessed default.
+    """
+    if not _optics_usable_key(key):
+        return []
+    data = store.entry(key) or {}
+    profiles = data.get("optics") or []
+    if not isinstance(profiles, list):
+        return []
+    out = []
+    for p in profiles:
+        if not isinstance(p, dict):
+            continue
+        stored_fw = p.get("fw")
+        if fw is not None and stored_fw and stored_fw != fw:
+            continue
+        out.append(p)
+    return out
+
+
+def record_optics(key: str, profile: dict, *, serial_known: bool) -> dict:
+    """Store an optics profile, deduplicated, under one lock hold.
+
+    `serial_known` must be True — the caller asserts the key is a trailer
+    serial, not a model fallback or a cache miss. Model-keyed bodies refuse
+    optics outright (ValueError: share nothing across bodies). Near-duplicate
+    FOVs (within OPTICS_FOV_EPS) return the existing profile instead of
+    appending. Candidate IDs are per-body namespaced ({key}-cand-N).
+    """
+    if not serial_known or not _optics_usable_key(key):
+        raise ValueError(
+            f"refusing optics for key {key!r}: optics are per-body, keyed by "
+            "trailer serial; model fallbacks and missing serials share "
+            "profiles across bodies")
+
+    def _add(item):
+        profiles = [p for p in (item.get("optics") or [])
+                    if isinstance(p, dict)]
+        fa, fb = profile.get("fov_a"), profile.get("fov_b")
+        for p in profiles:
+            try:
+                if (abs(float(p["fov_a"]) - float(fa)) <= OPTICS_FOV_EPS
+                        and abs(float(p["fov_b"]) - float(fb)) <= OPTICS_FOV_EPS):
+                    return item  # same cover, already stored
+            except (KeyError, TypeError, ValueError):
+                continue
+        n = sum(1 for p in profiles
+                if str(p.get("id", "")).startswith(f"{key}-cand-")) + 1
+        rec = {"id": f"{key}-cand-{n}", "status": "candidate",
+               **{k: v for k, v in profile.items() if k != "id"}}
+        profiles.append(rec)
+        item["optics"] = profiles
+        return item
+
+    return store.update(key, _add)
+
+
+def confirm_optics(key: str, profile_id: str, source: str) -> dict:
+    """Promote a candidate after a second recording fits within tolerance.
+
+    The caller decides the tolerance (the fit margin lives with the fit);
+    this only flips the status and records the confirming file.
+    """
+    def _confirm(item):
+        for p in (item.get("optics") or []):
+            if isinstance(p, dict) and p.get("id") == profile_id:
+                p["status"] = "confirmed"
+                p.setdefault("confirmed_by", []).append(source)
+        return item
+
+    return store.update(key, _confirm)
 
 
 def _cache_key(path) -> str:

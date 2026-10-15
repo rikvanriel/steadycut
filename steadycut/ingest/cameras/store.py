@@ -76,12 +76,56 @@ def entry(key: str) -> dict | None:
 
 def upsert(key: str, fields: dict) -> dict:
     """Merge `fields` into a camera's entry and write the registry back."""
-    data = load_registry()
-    item = dict(data.get(key) or {})
-    item.update(fields)
-    data[key] = item
-    _write(registry_path(), data)
-    return item
+    with locked():
+        data = load_registry()
+        item = dict(data.get(key) or {})
+        item.update(fields)
+        data[key] = item
+        _write(registry_path(), data)
+        return item
+
+
+def update(key: str, fn) -> dict:
+    """Apply `fn(item) -> item` atomically under the registry lock.
+
+    For read-modify-write enrollment (dedup + append) that must not race:
+    the read and the write share one lock hold, which upsert alone cannot
+    give (its read happens before its lock).
+    """
+    with locked():
+        data = load_registry()
+        item = fn(dict(data.get(key) or {}))
+        data[key] = item
+        _write(registry_path(), data)
+        return item
+
+
+def locked():
+    """Exclusive registry lock for read-modify-write enrollment.
+
+    Two renders enrolling candidates concurrently must not lose updates.
+    fcntl on a sidecar file; where fcntl is missing the lock is a no-op
+    (single-writer assumption, documented, not silent on Linux).
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def _locked():
+        lock_path = registry_path().parent / "cameras.lock"
+        try:
+            import fcntl
+        except ImportError:
+            yield
+            return
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock_path, "w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+
+    return _locked()
 
 
 def load_file_cache() -> dict:
