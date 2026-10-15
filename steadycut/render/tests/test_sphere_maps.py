@@ -57,3 +57,22 @@ def test_ramp_shape_seam_center_half_ownership():
     assert r[0] == 1.0 and r[1024] == 0.0
     width = int(((r > 0.01) & (r < 0.99)).sum() // 2)
     assert 4 <= width <= 20, width
+
+
+def test_routed_meridian_matches_blend_weight_bytes():
+    from steadycut.render.sphere_maps import routed_weight
+    w0, _ = blend_weight(2048, 1024, 4.0)
+    w1, _ = routed_weight(2048, 1024, 4.0, polylines=None)
+    assert np.array_equal((w0 * 255).astype(np.uint8),
+                          (w1 * 255).astype(np.uint8))
+
+
+def test_routed_deviation_recenters_within_coverage():
+    from steadycut.render.sphere_maps import routed_weight
+    poly = {512: np.full(1024, 516.0), 1536: np.full(1024, 1536.0)}
+    wgt, _ = routed_weight(2048, 1024, 4.0, polylines=poly)
+    assert abs(wgt[512, 516] - 0.5) < 0.02
+    # outside any lens's coverage the blind lens is hard-snapped, not blended
+    poly_far = {512: np.full(1024, 552.0), 1536: np.full(1024, 1536.0)}
+    wgt2, _ = routed_weight(2048, 1024, 4.0, polylines=poly_far)
+    assert wgt2[512, 552] == 0.0

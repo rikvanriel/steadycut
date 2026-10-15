@@ -105,6 +105,46 @@ def lens_to_sphere(fov, size=2880, w=2048, h=1024, back=False):
     return sx, sy, valid
 
 
+def routed_weight(w=2048, h=1024, ramp_deg=4.0, fov_a=182.2, fov_b=180.6,
+                  incidence_cap_deg=100.0, polylines=None, corridor_px=64):
+    """Incidence weight gated by routed corridors (Task 3.2).
+
+    Routing gates incidence, never replaces it: the ramp is recentered on
+    each seam's polyline (same half-width), and OUTSIDE the corridor the
+    better-hemisphere lens is hard-selected. Meridian polylines reproduce
+    blend_weight byte-identically (pinned). polylines: {512: arr(1024,),
+    1536: arr} in pano-x at width w, or None for both-meridian.
+    """
+    g = lens_geometry(w, h, fov_a, fov_b)
+    yaw = g["yaw"]
+    half = np.radians(ramp_deg) / 2.0
+    yaw_px = ((yaw / (2 * np.pi)) % 1.0) * w  # 0..w, 0 = front
+    side = np.where(np.abs(yaw) < np.pi / 2, 1.0, -1.0)
+    if polylines is None:
+        # meridian distances in yaw radians: identical to blend_weight
+        # (pinned byte-identical); pixel distances would need a 2π/w scale.
+        d = np.minimum(np.abs(np.abs(yaw) - np.pi / 2),
+                       np.pi - np.abs(np.abs(yaw) - np.pi / 2))
+    else:
+        d = np.full((h, w), np.inf)
+        for s, arr in polylines.items():
+            rows = np.clip((np.arange(h) * len(arr) // h), 0, len(arr) - 1)
+            dd = np.abs(yaw_px - arr[rows][:, None])
+            dd = np.minimum(dd, w - dd) * (2 * np.pi / w)
+            d = np.minimum(d, dd)
+    wgt = np.clip(0.5 + side * d / (2 * half), 0, 1)
+    wgt = np.where(d >= half, (side + 1) / 2, wgt)
+    cap = np.radians(incidence_cap_deg)
+    better_a = g["inc_a"] <= g["inc_b"]
+    wgt = np.where(np.minimum(g["inc_a"], g["inc_b"]) > cap,
+                   better_a.astype(float), wgt)
+    wgt = np.where(~g["valid_a"], 0.0, wgt)
+    wgt = np.where(~g["valid_b"], 1.0, wgt)
+    wgt = np.where(~g["valid_a"] & ~g["valid_b"], 0.0, wgt)
+    valid = g["valid_a"] | g["valid_b"]
+    return wgt.astype(np.float32), valid
+
+
 def build_maps(w=2048, h=1024, fov_a=182.2, fov_b=180.6, feather_deg=3.0):
     """Per-lens fisheye remap tables + incidence weight (lifts select_source).
 
