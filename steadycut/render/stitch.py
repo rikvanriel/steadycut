@@ -59,18 +59,21 @@ class StitchSpec:
 
 def mask_path(lens_fov_a: float, ramp_deg: float,
               w: int = 2048, h: int = 1024) -> Path:
-    """Cached blend ramp mask: 255 where lens A owns, 0 where B owns."""
-    dst = cache_dir() / f"mask_F{lens_fov_a:g}_R{ramp_deg:g}_{w}x{h}.png"
+    """Cached blend ramp mask: 255 where lens A owns, 0 where B owns.
+
+    Generated analytically from sphere yaw (sphere_maps.blend_weight), NOT
+    with the old geq radial ramp, which wandered ~220 px off-meridian by row
+    256. Same polarity and serving graph; new cache key (v2).
+    """
+    from steadycut.render.sphere_maps import MASK_VERSION, blend_weight
+    dst = (cache_dir() /
+           f"mask_{MASK_VERSION}_F{lens_fov_a:g}_R{ramp_deg:g}_{w}x{h}.png")
     if dst.exists():
         return dst
-    half = ramp_deg / 2.0
-    cmd = (
-        f"ffmpeg -hide_banner -v error -f lavfi -i nullsrc=size={w}x{h} "
-        f"-vf \"format=gray8,geq='clip(128-128/{half}*(180-{lens_fov_a}/{w//2}"
-        f"*hypot(X-{w//2},Y-{h//2})),0,255)',"
-        f"v360=input=fisheye:output=e:ih_fov={lens_fov_a}:iv_fov={lens_fov_a},"
-        f"scale={w}:{h}\" -frames:v 1 -y {dst}")
-    subprocess.run(cmd, shell=True, check=True)
+    import numpy as np
+    wgt, _ = blend_weight(w, h, ramp_deg, lens_fov_a)
+    cv2 = __import__("cv2")
+    cv2.imwrite(str(dst), (wgt * 255).astype(np.uint8))
     return dst
 
 

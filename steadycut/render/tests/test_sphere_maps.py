@@ -1,0 +1,59 @@
+"""Pins for the analytic sphere maps (Task 0.0): crossings, validity, poles.
+
+Fail-old: the geq mask's defect is pinned as data (row 256 crossed at
+293/1752) and must fail the gate; the new mask must pass it.
+"""
+import numpy as np
+
+from steadycut.render.sphere_maps import blend_weight, lens_geometry
+
+
+def _crossings(row):
+    return np.where(np.diff(np.sign(row - 0.5)))[0].tolist()
+
+
+def test_seam_crossings_within_2px_at_every_latitude():
+    wgt, _ = blend_weight(2048, 1024, 4.0)
+    for row in (128, 256, 384, 512, 640, 768, 896):
+        got = _crossings(wgt[row])
+        assert any(abs(c - 512) <= 2 for c in got), (row, got)
+        assert any(abs(c - 1536) <= 2 for c in got), (row, got)
+
+
+def _passes_gate(crossings):
+    return (any(abs(c - 512) <= 2 for c in crossings)
+            and any(abs(c - 1536) <= 2 for c in crossings))
+
+
+def test_gate_rejects_the_old_geq_defect():
+    """The retired mask crossed at 293/1752 on row 256 (~220 px off). A gate
+    that passes that mask gates nothing."""
+    assert _passes_gate([511, 1536])
+    assert not _passes_gate([293, 1752])
+
+
+def test_poles_get_a_switch_not_a_full_row_blend():
+    wgt, _ = blend_weight(2048, 1024, 4.0)
+    # Pole row: mostly decided pixels, narrow transition — never a full row
+    # of 0.5 (that was rim-vs-rim smear across the whole row).
+    trans = ((wgt[0] > 0.01) & (wgt[0] < 0.99)).sum()
+    assert trans < 256, trans
+    assert wgt[0].min() == 0.0 and wgt[0].max() == 1.0
+
+
+def test_validity_never_blends_black():
+    wgt, valid = blend_weight(2048, 1024, 4.0)
+    g = lens_geometry(2048, 1024)
+    # Where A is invalid the weight is 0; where B is invalid it is 1.
+    assert (wgt[~g["valid_a"]] == 0.0).all()
+    assert (wgt[~g["valid_b"]] == 1.0).all()
+    assert valid.mean() > 0.99
+
+
+def test_ramp_shape_seam_center_half_ownership():
+    wgt, _ = blend_weight(2048, 1024, 4.0)
+    r = wgt[512]
+    assert abs(r[512] - 0.5) < 0.02
+    assert r[0] == 1.0 and r[1024] == 0.0
+    width = int(((r > 0.01) & (r < 0.99)).sum() // 2)
+    assert 4 <= width <= 20, width

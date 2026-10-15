@@ -5,11 +5,12 @@ from steadycut.render.stitch import (GAIN_DEFAULT, StitchSpec, cache_dir,
                                      deflare_frame, mask_path)
 
 
-def test_mask_is_cached_and_binary_sized():
+def test_mask_is_cached_and_sized_with_a_ramp():
     import cv2
     m1 = mask_path(182.2, 4.0)
     m2 = mask_path(182.2, 4.0)
     assert m1 == m2 and m1.exists()
+    assert "v2" in m1.name  # analytic mask, not the retired geq bytes
     img = cv2.imread(str(m1), 0)
     assert img.shape == (1024, 2048)
     # ramp, not a step: mid values exist between the plateaus
