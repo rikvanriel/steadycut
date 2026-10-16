@@ -59,29 +59,10 @@ def flow_confidence(A, B, flow, win=9, valid=None):
 
 def joint_valid_strip(seam_x, halfw, fov_a=185.0, fov_b=183.5, h=1024,
                       w=2048):
-    """Joint-valid mask for a sphere-coordinate corridor strip, in V360
-    OUTPUT frame (measured: track0/yaw0 centers output-1024, track1/yaw180
-    centers output-0; lens_geometry's internal az=0 sits at output-1024, so
-    its validity is 180 deg off here — this function does NOT reuse it).
-
-    Analytic incidence vs half-FOV per lens, no black-pixel thresholds
-    (scene confounds those). The overlap is only ~24 px wide at fitted
-    FOVs — strips wider than that are mostly one-sided, and DIS matched
-    against black edges there (measured blue-smear failure)."""
-    ys, xs = np.mgrid[0:h, 0:w].astype(np.float64)
-    az = (xs / w) * 2 * np.pi
-    el = (0.5 - ys / h) * np.pi
-    dx = np.cos(el) * np.sin(az)
-    dy = np.sin(el)
-    dz = np.cos(el) * np.cos(az)
-    # output-frame axes: track0 (fov_a) at az=pi (x=1024), track1 at az=0.
-    inc_a = np.arccos(np.clip(-dz, -1, 1))
-    inc_b = np.arccos(np.clip(dz, -1, 1))
-    va = inc_a <= np.radians(fov_a) / 2
-    vb = inc_b <= np.radians(fov_b) / 2
-    x0 = max(0, seam_x - halfw)
-    x1 = min(w, seam_x + halfw)
-    return (va & vb)[:, x0:x1]
+    """Joint-valid mask for a sphere-coordinate corridor strip — moved to
+    sphere_maps (analytic geometry's home); kept here as a re-export."""
+    from steadycut.render.sphere_maps import joint_valid_strip as _jv
+    return _jv(seam_x, halfw, fov_a, fov_b, h, w)
 
 
 def warp_strip(B, flow):

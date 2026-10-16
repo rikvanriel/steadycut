@@ -21,6 +21,22 @@ def test_mask_is_cached_and_sized_with_a_ramp():
     assert img[512, 0] == 255 and img[512, 1024] == 0
 
 
+def test_routed_mask_path_differs_and_caches():
+    import cv2
+    import numpy as np
+    poly = {512: np.full(1024, 516.0), 1536: np.full(1024, 1536.0)}
+    m1 = mask_path(185.0, 4.0, fov_b=183.5, polylines=poly)
+    m2 = mask_path(185.0, 4.0, fov_b=183.5, polylines=poly)
+    assert m1 == m2 and "_r" in m1.name  # routed key differs from meridian
+    base = mask_path(185.0, 4.0, fov_b=183.5)
+    assert m1 != base
+    a = cv2.imread(str(m1), 0).astype(float)
+    b = cv2.imread(str(base), 0).astype(float)
+    diff = np.abs(a - b)
+    assert diff.max() > 30  # 4 px shift on a ~22 px ramp moves values ~46
+    assert (diff > 0).mean() < 0.05  # ...but stays local to the corridor
+
+
 def test_deflare_field_is_zero_at_center_and_grows_to_rim():
     import cv2
     p = deflare_frame(182.2, (5.39, -7.2, 9.36, -0.85))

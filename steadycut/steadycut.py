@@ -303,15 +303,56 @@ def main(argv=None) -> int:
             print("CLI| optics: no body serial, bench defaults (no registry)")
     cert["optics"] = {"id": stitch.optics_id, "fresh_fit": fresh_fit}
     cert["leveling"] = {"applied": False, "reason": "legacy or unmeasured"}
+    cert["seam"] = {"mode": "meridian", "reason": "legacy or unrouted"}
     if a.stitch == "blend":
+        # Route first: the Viterbi seam avoids near-field content the blend
+        # cannot absorb (37 px trunk ghost vs 24 px overlap — flow has no
+        # co-occurrence there). Static per window; failures fall back to
+        # meridian with a cert note, never break the render.
+        try:
+            from steadycut.render.seam_route import route_both
+            from steadycut.render.stitch import (save_polylines,
+                                                 sphere_still)
+            import numpy as np
+            cv2 = __import__("cv2")
+            eqdir = tmp / "equirects"
+            rstill = sphere_still(a.source, stitch, a.start,
+                                  keep_equirects_dir=eqdir)
+            eqA = cv2.imread(str(eqdir / "eqA.png"))
+            eqB = cv2.imread(str(eqdir / "eqB.png"))
+            W = eqA.shape[1]
+            Bal = np.roll(eqB, W // 2, axis=1)  # shared sphere coords
+            polys = route_both(eqA, Bal, seams=(512, 1536), halfw=48,
+                               width=W, fov_a=stitch.lens_fov_a,
+                               fov_b=stitch.lens_fov_b)
+            dev = {str(s): round(float(np.abs(p - s).max()), 1)
+                   for s, p in polys.items()}
+            stitch = dataclasses.replace(stitch, seam="routed",
+                                         seam_path=str(save_polylines(polys)))
+            cert["seam"] = {"mode": "routed", "max_dev_px": dev}
+            print(f"CLI| seam routed dev={dev}")
+        except Exception as exc:
+            cert["seam"] = {"mode": "meridian",
+                            "reason": f"routing failed: {exc}"}
+            print(f"CLI| seam meridian ({exc})")
+            eqdir = None
         # Seam softener: one merged still at the window start, step measured,
+<<<<<<< HEAD
         # correction frames onto the spec (cut leveling). Refusals ride the cert.
+=======
+        # correction frames onto the spec (Task 2.1). Refusals ride the cert.
+        # Reuses the routing block's still+equirects when present (same
+        # window start, same pixels — no second render).
+>>>>>>> 77643fa95cfc (feat: wire Viterbi routing into serving with validity clamp (ghost fix))
         try:
             from steadycut.render.stitch import (leveling_frames,
                                                  measure_step, sphere_still)
-            eqdir = tmp / "equirects"
-            still = sphere_still(a.source, stitch, a.start,
-                                 keep_equirects_dir=eqdir)
+            if eqdir is None or not (eqdir / "eqA.png").exists():
+                eqdir = tmp / "equirects"
+                still = sphere_still(a.source, stitch, a.start,
+                                     keep_equirects_dir=eqdir)
+            else:
+                still = rstill
             steps = measure_step(still)
             pp, nn, lcert = leveling_frames(stitch, steps)
             if pp is not None:

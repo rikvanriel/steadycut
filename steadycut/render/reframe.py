@@ -331,7 +331,8 @@ def render(
             "lens_fov": [stitch.lens_fov_a, stitch.lens_fov_b],
             "ramp_deg": stitch.ramp_deg,
             "deflare_poly": list(stitch.deflare_poly),
-            "optics_id": getattr(stitch, "optics_id", None)}
+            "optics_id": getattr(stitch, "optics_id", None),
+            "seam": getattr(stitch, "seam", "meridian")}
     else:
         stitch_record = {"method": "legacy"}
     render.stitch_record = stitch_record

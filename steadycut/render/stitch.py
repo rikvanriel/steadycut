@@ -57,10 +57,13 @@ class StitchSpec:
     gain: tuple | None = None  # None = measure per clip; else (B,G,R) + flag
     optics_id: str | None = None  # registry optics profile serving this render
     leveling: tuple | None = None  # (pos_frame, neg_frame) seam softener or None
+    seam: str = "meridian"  # or "routed": Viterbi polyline mask
+    seam_path: str | None = None  # npz {seam_x: polyline} when seam=routed
 
 
 def mask_path(lens_fov_a: float, ramp_deg: float,
-              w: int = 2048, h: int = 1024, fov_b: float | None = None) -> Path:
+              w: int = 2048, h: int = 1024, fov_b: float | None = None,
+              polylines: dict | None = None) -> Path:
     """Cached blend ramp mask: 255 at sphere front, 0 at sphere back.
 
     Generated analytically from sphere yaw (sphere_maps.blend_weight), NOT
@@ -75,13 +78,25 @@ def mask_path(lens_fov_a: float, ramp_deg: float,
     and by the 7.2-vs-76.5 inverted-merge probe, not by the filter docs.
     """
     from steadycut.render.sphere_maps import MASK_VERSION, blend_weight
+    import numpy as np
     fb = fov_b if fov_b is not None else LENS_FOV_B
+    tag = ""
+    if polylines is not None:
+        from steadycut.render.sphere_maps import routed_weight
+        import hashlib
+        key = hashlib.sha1(np.concatenate(
+            [np.asarray(v, dtype=np.float32).ravel()
+             for _, v in sorted(polylines.items())]).tobytes()).hexdigest()[:12]
+        tag = f"_r{key}"
     dst = (cache_dir() /
-           f"mask_{MASK_VERSION}_F{lens_fov_a:g}-{fb:g}_R{ramp_deg:g}_{w}x{h}.png")
+           f"mask_{MASK_VERSION}_F{lens_fov_a:g}-{fb:g}_R{ramp_deg:g}_{w}x{h}{tag}.png")
     if dst.exists():
         return dst
-    import numpy as np
-    wgt, _ = blend_weight(w, h, ramp_deg, lens_fov_a, fb)
+    if polylines is None:
+        wgt, _ = blend_weight(w, h, ramp_deg, lens_fov_a, fb)
+    else:
+        wgt, _ = routed_weight(w, h, ramp_deg, lens_fov_a, fb,
+                               polylines=polylines)
     cv2 = __import__("cv2")
     cv2.imwrite(str(dst), (wgt * 255).astype(np.uint8))
     return dst
@@ -418,6 +433,29 @@ def sphere_delta_to_lens(spec: StitchSpec, delta, size=2880) -> tuple:
     return pp, nn
 
 
+def save_polylines(polylines: dict) -> Path:
+    """Cache Viterbi polylines under a content hash; spec carries the path."""
+    import hashlib
+    import numpy as np
+    key = hashlib.sha1(np.concatenate(
+        [np.asarray(v, dtype=np.float32).ravel()
+         for _, v in sorted(polylines.items())]).tobytes()).hexdigest()[:12]
+    dst = cache_dir() / f"seam_{key}.npz"
+    if not dst.exists():
+        np.savez(dst, **{str(k): np.asarray(v, dtype=np.float32)
+                         for k, v in polylines.items()})
+    return dst
+
+
+def load_polylines(path) -> dict | None:
+    import numpy as np
+    try:
+        z = np.load(str(path))
+        return {int(k): np.asarray(z[k], dtype=float) for k in z.files}
+    except Exception:
+        return None
+
+
 def sphere_filtergraph(spec: StitchSpec, gain: tuple,
                        sphere_size=(2048, 1024)) -> tuple[str, Path]:
     """Two-pass sphere assembly over BAKED lens tracks (see bake_lens_tracks:
@@ -426,7 +464,11 @@ def sphere_filtergraph(spec: StitchSpec, gain: tuple,
     with its own calibrated FOV; maskedmerge joins them on [s].
     Returns (filter snippet, mask path)."""
     w, h = sphere_size
-    mask = mask_path(spec.lens_fov_a, spec.ramp_deg, w, h, spec.lens_fov_b)
+    polys = None
+    if getattr(spec, "seam", "meridian") == "routed" and spec.seam_path:
+        polys = load_polylines(spec.seam_path)
+    mask = mask_path(spec.lens_fov_a, spec.ramp_deg, w, h, spec.lens_fov_b,
+                     polylines=polys)
     gb, gg, gr = gain
     fg = (
         f"[0:v]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_a}"
