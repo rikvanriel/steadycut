@@ -67,3 +67,47 @@ def test_compose_zero_confidence_falls_back_to_B():
     out = compose_corrected_B(eqB, 256, 64, flow,
                               np.zeros((h, w), np.float32))
     assert np.array_equal(out, eqB)  # violent-motion fallback: no warp at all
+
+
+def _double_pair(dx=50, h=64, w=512):
+    """Synthetic double: B carries the same bar dx px right of A's."""
+    A = np.full((h, w, 3), 180, np.uint8)
+    B = np.full((h, w, 3), 180, np.uint8)
+    A[:, 200:220] = 60
+    B[:, 200 + dx:220 + dx] = 60
+    return A, B
+
+
+def test_window_must_cover_destination():
+    """Span field -> window -> compose -> merge; the double must collapse.
+
+    Guards the destination-vs-source window bug: a source-centered window
+    leaves the double standing (fails), a dest->src window collapses it.
+    """
+    from steadycut.render.corridor_flow import (compose_corrected_B,
+                                                dest_src_window)
+    dx = 50
+    A, B = _double_pair(dx)
+    h, w = A.shape[:2]
+    flow = np.zeros((h, w, 2), np.float32)
+    flow[:, :] = (float(dx), 0.0)
+    dest, src = 210, 210 + dx
+
+    def residual(conf):
+        x0 = dest - 128
+        Bc = compose_corrected_B(B, dest, 128, flow[:, x0:x0 + 256],
+                                 conf[:, x0:x0 + 256])
+        M = np.where(np.arange(w)[None, :, None] < dest - 30, A, Bc)
+        strip = M[:, dest - 30:dest + 30].astype(float)
+        ref = A[:, dest - 30:dest + 30].astype(float)
+        return np.abs(strip - ref).mean()
+
+    good = dest_src_window(w, dest, src, ramp=12).astype(np.float32)
+    good = np.broadcast_to(good[None, :], (h, w)).copy()
+    assert residual(good) < 15.0, residual(good)
+    # the old shape: source-centered, destination outside -> double stands
+    xs = np.arange(w, dtype=np.float32)
+    bad = (0.5 - 0.5 * np.cos(
+        np.clip(1 - np.abs(xs - src) / 35, 0, 1) * np.pi)).astype(np.float32)
+    bad = np.broadcast_to(bad[None, :], (h, w)).copy()
+    assert residual(bad) > 15.0, residual(bad)

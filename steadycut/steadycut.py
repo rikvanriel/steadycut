@@ -337,13 +337,9 @@ def main(argv=None) -> int:
             print(f"CLI| seam meridian ({exc})")
             eqdir = None
         # Seam softener: one merged still at the window start, step measured,
-<<<<<<< HEAD
         # correction frames onto the spec (cut leveling). Refusals ride the cert.
-=======
-        # correction frames onto the spec (Task 2.1). Refusals ride the cert.
         # Reuses the routing block's still+equirects when present (same
         # window start, same pixels — no second render).
->>>>>>> 77643fa95cfc (feat: wire Viterbi routing into serving with validity clamp (ghost fix))
         try:
             from steadycut.render.stitch import (leveling_frames,
                                                  measure_step, sphere_still)
