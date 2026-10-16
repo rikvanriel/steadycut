@@ -187,8 +187,12 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
     if spec.leveling is not None:
         # Seam softener on track B (deflare precedent for asymmetric): add
         # the positive lobe, subtract the negative, around the gain stage.
-        lv = ("[b0][lvP]blend=all_mode=addition,format=yuv444p[bx];"
-              "[bx][lvN]blend=all_mode=subtract,format=yuv444p[by];")
+        # ALL blend inputs stay gbrp (the old deflare path's convention);
+        # a single format=yuv444p closes the chain. Converting mid-chain
+        # (format= inside a blend) feeds the next blend mismatched planes
+        # and the output comes out monochrome green — measured, v3.
+        lv = ("[b0][lvP]blend=all_mode=addition[bx];"
+              "[bx][lvN]blend=all_mode=subtract[by];")
     fc = (
         f"[0:v:0]format=gbrp[a0];[1:v]format=gbrp,split[df1][df2];"
         + (f"[2:v]format=gbrp[lvP];[3:v]format=gbrp[lvN];"
@@ -233,13 +237,15 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
 
 def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
                  gain: tuple | None = None,
-                 sphere_size=(2048, 1024)) -> Path:
+                 sphere_size=(2048, 1024), keep_equirects_dir=None) -> Path:
     """One blend-graph equirect still (review/instrument use, not delivery).
 
     Per-lens v360 fisheye->equirect with each lens's own FOV (the same two
     passes sphere_filtergraph runs), deflare + gain applied like the bake,
     joined by the analytic mask. reframe emits flat only, so scoreboard and
-    eye work that needs the sphere comes here.
+    eye work that needs the sphere comes here. keep_equirects_dir: when set,
+    the preprocessed per-lens equirects (A first, B second, production yaw
+    convention) are kept there for flow/routing stages sharing the pixels.
     """
     import numpy as np
     from steadycut.render.sphere_maps import blend_weight
@@ -281,7 +287,14 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
                 shell=True, check=True, timeout=120)
         ea = cv2.imread(eq[0]).astype(np.float32)
         eb = cv2.imread(eq[1]).astype(np.float32)
-        wgt, _ = blend_weight(w, h, spec.ramp_deg, spec.lens_fov_a)
+        if keep_equirects_dir is not None:
+            import shutil
+            kd = Path(keep_equirects_dir)
+            kd.mkdir(parents=True, exist_ok=True)
+            shutil.copy(eq[0], kd / "eqA.png")
+            shutil.copy(eq[1], kd / "eqB.png")
+        wgt, _ = blend_weight(w, h, spec.ramp_deg, spec.lens_fov_a,
+                                spec.lens_fov_b)
         w3 = wgt[:, :, None]
         if ea.shape[:2] != (h, w):
             ea = cv2.resize(ea, (w, h))
@@ -295,7 +308,7 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
         img = np.clip(eb * w3 + ea * (1 - w3), 0, 255).astype(np.uint8)
         dst = (cache_dir() /
                f"still_{Path(source).stem}_t{t:g}_"
-               f"F{spec.lens_fov_a:g}-{spec.lens_fov_b:g}.png")
+               f"F{spec.lens_fov_a:g}-{spec.lens_fov_b:g}_R{spec.ramp_deg:g}.png")
         cv2.imwrite(str(dst), img)
         return dst
 
@@ -375,6 +388,34 @@ def leveling_frames(spec: StitchSpec, steps: dict, size=2880, w=2048,
     cv2.imwrite(str(np_), neg)
     cert.update({"applied": True, "worst_dn": round(float(worst), 2)})
     return pp, np_, cert
+
+
+def sphere_delta_to_lens(spec: StitchSpec, delta, size=2880) -> tuple:
+    """Map a sphere-space RGB correction delta onto the lens-B track.
+
+    delta: float32 (h, w, 3) sphere still (e.g. flow-corrected B minus B).
+    Inverse-samples through lens_to_sphere so the correction rides the
+    existing bake blends (same mechanism as leveling) instead of requiring
+    an own-remap sphere bake (Phase 6 verdict: unjustified). Returns
+    (pos_frame, neg_frame) uint8 paths; zero delta yields empty frames.
+    """
+    import numpy as np
+    from steadycut.render.sphere_maps import lens_to_sphere
+    cv2 = __import__("cv2")
+    dh, dw = delta.shape[:2]
+    sx, sy, valid = lens_to_sphere(spec.lens_fov_b, size=size, w=dw, h=dh,
+                                   back=True)
+    lens = cv2.remap(delta.astype(np.float32), sx, sy, cv2.INTER_LINEAR,
+                     borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    lens = np.where(valid[:, :, None], lens, 0.0)
+    pos = np.clip(lens, 0, 255).astype(np.uint8)
+    neg = np.clip(-lens, 0, 255).astype(np.uint8)
+    key = f"{spec.lens_fov_b:g}_delta_{size}"
+    pp = cache_dir() / f"flow_pos_{key}.png"
+    nn = cache_dir() / f"flow_neg_{key}.png"
+    cv2.imwrite(str(pp), pos)
+    cv2.imwrite(str(nn), neg)
+    return pp, nn
 
 
 def sphere_filtergraph(spec: StitchSpec, gain: tuple,
