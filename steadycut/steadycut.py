@@ -52,6 +52,14 @@ def build_parser() -> argparse.ArgumentParser:
                     "opt in until the bake is optimized")
     ap.add_argument("--preset", default="medium",
                     help="x264 preset for the final encode")
+    ap.add_argument("--repair", action="store_true",
+                    help="near-field double repair on stills (gated auto: "
+                         "acts only with SIFT-confirmed displacement, else "
+                         "cert-logs needs-eye)")
+    ap.add_argument("--repair-spans", default=None, metavar="PATH",
+                    help="explicit operator spans JSON "
+                         "(rect/dx/seam, grid-probe measured) repaired "
+                         "instead of auto detection")
     ap.add_argument("--camera", default=None, metavar="MODEL",
                     help="force the camera model when the container carries "
                          "no recognizable signature")
@@ -317,7 +325,9 @@ def main(argv=None) -> int:
             cv2 = __import__("cv2")
             eqdir = tmp / "equirects"
             rstill = sphere_still(a.source, stitch, a.start,
-                                  keep_equirects_dir=eqdir)
+                                  keep_equirects_dir=eqdir,
+                                  repair=a.repair,
+                                  spans=a.repair_spans)
             eqA = cv2.imread(str(eqdir / "eqA.png"))
             eqB = cv2.imread(str(eqdir / "eqB.png"))
             W = eqA.shape[1]
@@ -351,7 +361,9 @@ def main(argv=None) -> int:
             if eqdir is None or not (eqdir / "eqA.png").exists():
                 eqdir = tmp / "equirects"
                 still = sphere_still(a.source, stitch, a.start,
-                                     keep_equirects_dir=eqdir)
+                                     keep_equirects_dir=eqdir,
+                                     repair=a.repair,
+                                     spans=a.repair_spans)
             else:
                 still = rstill
             steps = measure_step(still)

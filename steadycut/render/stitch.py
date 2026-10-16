@@ -252,7 +252,8 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
 
 def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
                  gain: tuple | None = None,
-                 sphere_size=(2048, 1024), keep_equirects_dir=None) -> Path:
+                 sphere_size=(2048, 1024), keep_equirects_dir=None,
+                 repair: bool = False, spans=None) -> Path:
     """One blend-graph equirect still (review/instrument use, not delivery).
 
     Per-lens v360 fisheye->equirect with each lens's own FOV (the same two
@@ -261,6 +262,9 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
     eye work that needs the sphere comes here. keep_equirects_dir: when set,
     the preprocessed per-lens equirects (A first, B second, production yaw
     convention) are kept there for flow/routing stages sharing the pixels.
+    repair: run near-field auto repair (gated, cert-printed) on the merge.
+    spans: explicit operator spans (nearfield.load_spans JSON) repaired
+    instead of auto detection.
     """
     import numpy as np
     from steadycut.render.sphere_maps import blend_weight
@@ -321,6 +325,22 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
         # the content; wgt is 1.0 on A's sphere hemisphere. Both conventions
         # are pinned in test_sphere_maps/test_stitch — touch neither blindly.
         img = np.clip(eb * w3 + ea * (1 - w3), 0, 255).astype(np.uint8)
+        if spans or repair:
+            from steadycut.render.nearfield import (auto_repair, load_spans,
+                                                    repair_spans)
+            if spans:
+                parsed = load_spans(spans) if isinstance(spans, str) else spans
+                img = repair_spans(ea.astype(np.uint8), eb.astype(np.uint8),
+                                   wgt, parsed, spec.lens_fov_a,
+                                   spec.lens_fov_b)
+                print(f"CLI| nearfield {len(parsed)} explicit spans repaired")
+            else:
+                img, ncert = auto_repair(ea.astype(np.uint8),
+                                         eb.astype(np.uint8), wgt,
+                                         spec.lens_fov_a, spec.lens_fov_b)
+                for s in ncert["spans"]:
+                    print(f"CLI| nearfield seam {s['seam']} rect {s['rect']}"
+                          f" dx {s['dx']} votes {s['votes']}: {s['action']}")
         dst = (cache_dir() /
                f"still_{Path(source).stem}_t{t:g}_"
                f"F{spec.lens_fov_a:g}-{spec.lens_fov_b:g}_R{spec.ramp_deg:g}.png")

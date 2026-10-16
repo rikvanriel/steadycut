@@ -159,7 +159,7 @@ def find_duplicates_sift(eqA, eqB, seams=SEAMS, y_lo=0, y_hi=1024,
         jv = joint_valid_strip(sx, HALFW, fov_a, fov_b, H, W)
         # per-band matching: full-frame keypoint pools drown the ratio
         # test (forest descriptors all alike); 200-row bands discriminate.
-        for by0 in range(y_lo, y_hi, 200):
+        for by0 in range(y_lo, min(y_hi, H), 200):
             by1 = min(y_hi, by0 + 200)
             pts = _sift_band(sift, cv2, gA, gB, sx, by0, by1,
                              min_dx, max_dx, max_dy)
