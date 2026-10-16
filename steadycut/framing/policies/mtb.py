@@ -60,6 +60,7 @@ POLICY = register(FramingPolicy(
     ),
     hint="re-try with --pitch set by eye",
     capabilities=frozenset({"pitch_measured", "gaze_follow"}),
+    corner_hz=0.15,  # validated: beat 0.5 Hz on every far-field window
     notes="Rider is the camera operator. Head pitch swings the subject in and "
           "out of frame, so the framing band is 2-D, not yaw-only. The rider's "
           "own arms and shoulders occlude intermittently: occlusion is normal, "

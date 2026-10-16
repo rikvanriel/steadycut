@@ -37,16 +37,18 @@ def test_the_corner_default_is_the_validated_one() -> None:
 
     It was adopted because 0.15 Hz beat 0.5 Hz on every window of a
     multi-clip far-field validation; a change here should be a deliberate
-    re-measurement, not a drift back to a rounder number. The library default
-    and the CLI default are the same value, and must move together -- a tool
-    that calls the library directly has to evaluate production.
+    re-measurement, not a drift back to a rounder number. The CLI default
+    is None (policy-owned: mtb resolves to 0.15, ski to 0.02); the library
+    default stays 0.15, and an explicit --corner always wins.
     """
     import inspect
     from steadycut.core import pipeline as P
     a = build_parser().parse_args(["f.insv", "--start", "1", "--dur", "2"])
     lib = inspect.signature(P.build_gyro_path).parameters["corner_hz"].default
-    assert a.corner == 0.15
-    assert lib == a.corner
+    assert a.corner is None  # policy-owned; see policy.corner_hz
+    assert lib == 0.15
+    from steadycut.framing.policies import policy_for
+    assert policy_for("mtb").corner_hz == 0.15
 
 
 def _exdev_once(monkeypatch):
