@@ -102,6 +102,8 @@ class FramingPolicy:
     # recording has no target to sweep toward, and sweeping anyway is how an
     # end of the ladder gets presented as a usable pitch.
     search: "PitchSearch | Callable[[object], PitchSearch | None] | None" = None
+    yaw_corner_hz: float | None = None  # travel leash; None = legacy corner
+    corner_hz: float | None = None  # policy default corner; None = CLI default
     hint: str = "re-try with --pitch set by eye"
     notes: str = ""
     capabilities: frozenset[str] = field(default_factory=frozenset)

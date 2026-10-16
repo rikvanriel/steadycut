@@ -216,7 +216,10 @@ def measure_sync(spec: ClipSpec, lags_ms=range(-200, 61, 10),
 
 
 
-def correction_euler_axes(t, gyro, tau_s, axis_map=None):
+def correction_euler_axes(t, gyro, tau_s, axis_map=None, yaw_tau_s=None):
+    """Pass yaw_tau_s to put yaw on its own leash (travel policies); None
+    (default) is the legacy single-tau path, bit for bit."""
+
     """Yaw, pitch and roll for v360, in the order v360 actually composes them.
 
     v360 builds `R_yaw * R_pitch * R_roll` about Y, X and Z (vf_v360.c
@@ -240,7 +243,8 @@ def correction_euler_axes(t, gyro, tau_s, axis_map=None):
     decomposition and nothing else.
     """
     from steadycut.stabilization import orientation as O
-    qy, qp, qr = O.correction_axes(t, gyro, tau_s, axis_map)
+    qy, qp, qr = O.correction_axes(t, gyro, tau_s, axis_map,
+                                    yaw_tau_s=yaw_tau_s)
     corr = np.column_stack([qp, qy, qr])
     out = O.from_rotvec(np.deg2rad(corr))
     # `to_euler_zxy` inverts the renderer's MEASURED behavior,
@@ -255,7 +259,7 @@ def correction_euler_axes(t, gyro, tau_s, axis_map=None):
 
 def build_gyro_path(spec: ClipSpec, stamp_offset_ms: float = 0.0,
                     corner_hz: float = 0.15, drift_ppm: float = 0.0,
-                    drift_ref_s: float = 0.0):
+                    drift_ref_s: float = 0.0, yaw_corner_hz=None):
     """Stabilisation path for a clip: gyro correction + framing, thinned.
 
     corner_hz 0.15 is the MEASURED production default (see correction_axes);
@@ -291,8 +295,11 @@ def build_gyro_path(spec: ClipSpec, stamp_offset_ms: float = 0.0,
     mask = (t >= -15) * (t <= spec.duration + 15)
     tw, gw = t[mask], imu.gyro[mask]
     tau = 1.0 / (2.0 * math.pi * corner_hz)
+    yaw_tau = (1.0 / (2.0 * math.pi * yaw_corner_hz)
+               if yaw_corner_hz and yaw_corner_hz != corner_hz else None)
     axis_map = spec.profile.axis_map if spec.profile is not None else None
-    qy, qp, qr = correction_euler_axes(tw, gw, tau, axis_map)
+    qy, qp, qr = correction_euler_axes(tw, gw, tau, axis_map,
+                                       yaw_tau_s=yaw_tau)
     from steadycut.render.reframe import ControlPoint
     from steadycut.stabilization.path import PathPoint, thin
     raw = [PathPoint(t=float(tt), yaw=float(y),

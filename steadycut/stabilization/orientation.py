@@ -202,6 +202,61 @@ def to_euler_zyx(q):
     return np.degrees(np.stack([a, b, c], axis=-1))
 
 
+def _smooth_1d(x, t, tau_s):
+    """Scalar twin of smooth(): exponential low pass, forward then reversed
+    to remove the delay, so a constant-rate sweep comes through unchanged."""
+    x = np.asarray(x, float)
+    if tau_s <= 0:
+        return x.copy()
+    dt = float(np.median(np.diff(t)))
+    alpha = 1.0 - np.exp(-dt / tau_s)
+    out = x.copy()
+    for i in range(1, len(x)):
+        out[i] = out[i - 1] + alpha * (x[i] - out[i - 1])
+    back = out.copy()
+    for i in range(len(x) - 2, -1, -1):
+        back[i] = back[i + 1] + alpha * (out[i] - back[i + 1])
+    return back
+
+
+def _zxy_to_quat(y2, p, r):
+    """Quaternions for R = R_z(r) R_x(p) R_y(y2), radians. Inverse of the
+    to_euler_zxy decomposition (up to the gimbal branch, which holds r at 0
+    and is exact there too)."""
+    y2, p, r = np.broadcast_arrays(y2, p, r)
+    cy, sy = np.cos(y2 / 2), np.sin(y2 / 2)
+    cp, sp = np.cos(p / 2), np.sin(p / 2)
+    cr, sr = np.cos(r / 2), np.sin(r / 2)
+    # q = qz(r) * qx(p) * qy(y2), Hamilton product, (w,x,y,z).
+    qy = np.stack([cy, np.zeros_like(cy), sy, np.zeros_like(cy)], -1)
+    qx = np.stack([cp, sp, np.zeros_like(cp), np.zeros_like(cp)], -1)
+    qz = np.stack([cr, np.zeros_like(cr), np.zeros_like(cr), sr], -1)
+    return _normalise(_mul(_mul(qz, qx), qy))
+
+
+def smooth_channels(q_raw, t, tau_yaw_s, tau_other_s):
+    """Trend with yaw on its own leash: decompose to v360 Euler, unwrap,
+    filter yaw with tau_yaw_s and pitch/roll with tau_other_s (same zero-lag
+    forward-backward shape as smooth), recompose. This is how a travel policy
+    holds a heading through look-arounds while keeping production shake
+    removal on pitch/roll -- done on angles before composition, never by
+    splicing slots from two different smoothings (whose Euler components do
+    not compose: measured 77 px rms on a spliced probe against 7.7 for the
+    composed equivalent).
+
+    Gimbal caveat: at pitch +-90 deg y2/r are not separable (same branch as
+    to_euler_zxy). Ski/MTB pitch never goes there; a policy that needs the
+    poles wants a different decomposition, not a wider tolerance here.
+    """
+    e = to_euler_zxy(q_raw)
+    y = np.unwrap(np.radians(e[:, 0]))
+    p = np.unwrap(np.radians(e[:, 1]))
+    r = np.unwrap(np.radians(e[:, 2]))
+    return _zxy_to_quat(_smooth_1d(y, t, tau_yaw_s),
+                        _smooth_1d(p, t, tau_other_s),
+                        _smooth_1d(r, t, tau_other_s))
+
+
 def relative(q_raw, q_smooth):
     """Rotation from the raw orientation to the smoothed one.
 
@@ -213,7 +268,7 @@ def relative(q_raw, q_smooth):
     return _normalise(_mul(_conj(q_raw), q_smooth))
 
 
-def correction_axes(t, gyro, tau_s, axis_map=None):
+def correction_axes(t, gyro, tau_s, axis_map=None, yaw_tau_s=None):
     """Yaw, pitch and roll correction in degrees, from the quaternion pipeline.
 
     `axis_map` states, per channel, which gyro column carries it and with what
@@ -224,6 +279,10 @@ def correction_axes(t, gyro, tau_s, axis_map=None):
     angles: the components map straight onto the three axes, which avoids the
     singularities and order dependence of Euler extraction for the small
     corrections that stabilisation produces.
+
+    `yaw_tau_s` puts yaw on its own leash (travel policies): the trend is
+    built by smooth_channels instead of smooth, holding a heading through
+    look-arounds. None (default) is byte-identical to the old path.
     """
     if axis_map is None:
         raise ValueError(
@@ -233,7 +292,10 @@ def correction_axes(t, gyro, tau_s, axis_map=None):
     am = axis_map
     body = gyro[:, [am.pitch[0], am.yaw[0], am.roll[0]]]
     q_raw = integrate(t, body)
-    q_smooth = smooth(q_raw, t, tau_s)
+    if yaw_tau_s is None:
+        q_smooth = smooth(q_raw, t, tau_s)
+    else:
+        q_smooth = smooth_channels(q_raw, t, yaw_tau_s, tau_s)
     rv = np.degrees(to_rotvec(relative(q_raw, q_smooth)))
     # Signs come from the axis map, measured per model: the stitched sphere is
     # rotated 180 degrees relative to the camera axes by the fisheye stacking
