@@ -321,7 +321,12 @@ def main(argv=None) -> int:
             eqA = cv2.imread(str(eqdir / "eqA.png"))
             eqB = cv2.imread(str(eqdir / "eqB.png"))
             W = eqA.shape[1]
-            Bal = np.roll(eqB, W // 2, axis=1)  # shared sphere coords
+            Bal = eqB  # same sphere coords: v360 yaw rotates the output
+            # image (measured: same lens at yaw180 lands exactly -1024 px,
+            # score 1.0), so lens0@yaw0 and lens1@yaw180 share coordinates.
+            # Rolling by half width compares OPPOSITE globe sides (that bug
+            # fed the router garbage cost and hid the double at thumbnail
+            # res while full-res still doubled).
             polys = route_both(eqA, Bal, seams=(512, 1536), halfw=48,
                                width=W, fov_a=stitch.lens_fov_a,
                                fov_b=stitch.lens_fov_b)
