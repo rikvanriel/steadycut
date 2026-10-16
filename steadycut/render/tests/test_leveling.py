@@ -58,3 +58,27 @@ def test_frames_peak_at_the_step_on_the_sliver():
     import cv2
     p = cv2.imread(str(pp)).astype(float)
     assert p[:, :, 0].max() == pytest.approx(6.0, abs=1.5)
+
+
+def test_sphere_delta_to_lens_zero_is_empty():
+    import numpy as np
+    from steadycut.render.stitch import sphere_delta_to_lens
+    spec = StitchSpec(method="blend")
+    pp, nn = sphere_delta_to_lens(spec, np.zeros((256, 512, 3), np.float32),
+                                  size=360)
+    import cv2
+    assert cv2.imread(str(pp)).max() == 0
+    assert cv2.imread(str(nn)).max() == 0
+
+
+def test_sphere_delta_to_lens_lands_on_the_sliver():
+    import numpy as np
+    from steadycut.render.stitch import sphere_delta_to_lens
+    spec = StitchSpec(method="blend")
+    delta = np.zeros((1024, 2048, 3), np.float32)
+    delta[:, 1500:1560] = (10.0, 0.0, 0.0)  # block at the 1536 seam
+    pp, _ = sphere_delta_to_lens(spec, delta, size=720)
+    import cv2
+    p = cv2.imread(str(pp)).astype(float)
+    assert p[:, :, 0].max() > 5.0  # survives the inverse sampling
+    assert p.mean() < 1.0  # ...and stays local

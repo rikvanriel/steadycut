@@ -309,7 +309,9 @@ def main(argv=None) -> int:
         try:
             from steadycut.render.stitch import (leveling_frames,
                                                  measure_step, sphere_still)
-            still = sphere_still(a.source, stitch, a.start)
+            eqdir = tmp / "equirects"
+            still = sphere_still(a.source, stitch, a.start,
+                                 keep_equirects_dir=eqdir)
             steps = measure_step(still)
             pp, nn, lcert = leveling_frames(stitch, steps)
             if pp is not None:
@@ -321,6 +323,52 @@ def main(argv=None) -> int:
             cert["leveling"] = {"applied": False,
                                 "reason": f"measurement failed: {exc}"}
             print(f"CLI| leveling skipped ({exc})")
+            eqdir = None
+        # Flow delta folded into the same bake blends:
+        # static per window, confidence-gated, failures skip silently.
+        cert["flow"] = {"applied": False, "reason": "unmeasured"}
+        if eqdir is not None and (eqdir / "eqA.png").exists():
+            try:
+                from steadycut.render.corridor_flow import (
+                    compose_corrected_B, corridor_pair, flow_confidence,
+                    flow_strip, joint_valid_strip)
+                from steadycut.render.stitch import sphere_delta_to_lens
+                import numpy as np
+                cv2 = __import__("cv2")
+                eqA = cv2.imread(str(eqdir / "eqA.png"))
+                eqB = cv2.imread(str(eqdir / "eqB.png"))
+                acc_pos, acc_neg, cov = [], [], {}
+                for seam in (512, 1536):
+                    sA, sB, _ = corridor_pair(eqA, eqB, seam, 48)
+                    flow = flow_strip(sA, sB)
+                    valid = joint_valid_strip(seam, 48)
+                    conf = flow_confidence(sA, sB, flow, valid=valid)
+                    cov[str(seam)] = round(float(((conf > 0.5)
+                                                  & valid).mean()), 4)
+                    Bc = compose_corrected_B(eqB, seam, 48, flow, conf)
+                    delta = (Bc.astype(np.float32)
+                             - eqB.astype(np.float32))
+                    fp, fn = sphere_delta_to_lens(stitch, delta)
+                    acc_pos.append(cv2.imread(str(fp)).astype(float))
+                    acc_neg.append(cv2.imread(str(fn)).astype(float))
+                P = np.clip(sum(acc_pos), 0, 255)
+                N = np.clip(sum(acc_neg), 0, 255)
+                if stitch.leveling is not None:
+                    P = np.clip(P + cv2.imread(
+                        str(stitch.leveling[0])).astype(float), 0, 255)
+                    N = np.clip(N + cv2.imread(
+                        str(stitch.leveling[1])).astype(float), 0, 255)
+                cv2.imwrite(str(eqdir / "flow_pos.png"), P.astype(np.uint8))
+                cv2.imwrite(str(eqdir / "flow_neg.png"), N.astype(np.uint8))
+                stitch = dataclasses.replace(
+                    stitch, leveling=(eqdir / "flow_pos.png",
+                                      eqdir / "flow_neg.png"))
+                cert["flow"] = {"applied": True, "coverage": cov}
+                print(f"CLI| flow applied=True coverage={cov}")
+            except Exception as exc:
+                cert["flow"] = {"applied": False,
+                                "reason": f"flow skipped: {exc}"}
+                print(f"CLI| flow skipped ({exc})")
     spec = ClipSpec(source=a.source, start=a.start, duration=a.dur,
                     framing_pitch=pitch, fov=fov, size=size, profile=profile,
                     stitch=stitch)
