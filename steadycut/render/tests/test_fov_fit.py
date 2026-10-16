@@ -46,15 +46,22 @@ def test_score_step_reads_plateau_difference():
 def test_refine_converges_on_convex_curve():
     import steadycut.render.fov_fit as F
 
-    def fake_render(A, B, fa, fb, w=1024, h=512):
-        return (fa, fb)  # pass-through: score reads the params
-
-    orig_render, orig_score = F.render_pair, F.score_sphere
+    orig_full = F._full_score
     try:
-        F.render_pair = fake_render
-        F.score_sphere = lambda pair: ((pair[0] - 183.5) ** 2
-                                       + (pair[1] - 181.0) ** 2, 0.0)
+        F._full_score = lambda A, B, fa, fb, w=1024, h=512: (
+            round((((fa - 183.5) ** 2 + (fb - 181.0) ** 2)) / 0.05), 0.0, 0.0)
         fa, fb, _ = F._refine(None, None, 182.0, 180.0)
         assert abs(fa - 183.5) <= 0.25 and abs(fb - 181.0) <= 0.25, (fa, fb)
     finally:
-        F.render_pair, F.score_sphere = orig_render, orig_score
+        F._full_score = orig_full
+
+
+def test_ghost_score_prefers_clean_over_doubled():
+    import numpy as np
+    from steadycut.render.fov_fit import ghost_score
+    h, w = 256, 512
+    clean = np.full((h, w, 3), 128, np.uint8)
+    clean[:, 100 - 4:100 + 4] = 200  # one bar, left of seam (128)
+    doubled = clean.copy()
+    doubled[:, 165 - 4:165 + 4] = 200  # same bar again right of seam
+    assert ghost_score(doubled) > ghost_score(clean)
