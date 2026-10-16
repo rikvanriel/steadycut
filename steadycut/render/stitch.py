@@ -292,6 +292,12 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
         a[:, :, 0] = np.clip(a[:, :, 0] - db.astype(np.float32), 0, 255)
         b = np.clip(b.astype(np.float32) *
                     np.array(g, np.float32), 0, 255)  # g is (B,G,R), BGR order
+        # rim-blue: the fisheye circle edge renders +20..+160 excess blue
+        # (measured snow-only), magnified by v360 into the seam bands.
+        # Per-recording radial profile (same pattern as per-clip gain).
+        from steadycut.render.rim import rim_blue_correct
+        a = rim_blue_correct(a.astype(np.uint8)).astype(np.float32)
+        b = rim_blue_correct(b.astype(np.uint8)).astype(np.float32)
         cv2.imwrite(f"{tmp}/pa.png", a.astype(np.uint8))
         cv2.imwrite(f"{tmp}/pb.png", b.astype(np.uint8))
         eq = []
