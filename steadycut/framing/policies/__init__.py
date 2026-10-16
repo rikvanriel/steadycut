@@ -135,4 +135,5 @@ def policy_names() -> list[str]:
 # for its profiles: anything that resolves a policy imports this package, so
 # registration is guaranteed before lookup.
 from steadycut.framing.policies import mtb  # noqa: E402,F401  (registers "mtb")
+from steadycut.framing.policies import ski  # noqa: E402,F401  (registers "ski")
 from steadycut.framing.policies import ground  # noqa: E402,F401  (registers "ground")
