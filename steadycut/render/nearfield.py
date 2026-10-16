@@ -105,14 +105,43 @@ def eroded_validity(gray, thresh=8, erode_px=ERODE_PX):
     return dist > erode_px
 
 
+def multiband_merge(A, Bc, wgt, validA, validBc, bands=5):
+    """Studio-style blend: tone across octaves, detail at the cut.
+
+    Partition masks over the union (each side wins where the other is
+    blind — a weight-side mask alone leaves black ticks where the warp
+    reaches past validity). Single-band ramps keep a tone step; the
+    multiband stack smooths it while aligned detail survives.
+    """
+    cv2 = __import__("cv2")
+    w = np.asarray(wgt, dtype=float)
+    mA = (validA & ((w < 0.5) | ~validBc)).astype(np.uint8) * 255
+    mB = (validBc & ((w >= 0.5) | ~validA)).astype(np.uint8) * 255
+    h, W = mA.shape
+    bl = cv2.detail.MultiBandBlender()
+    bl.setNumBands(bands)
+    bl.prepare((0, 0, W - 1, h - 1))
+    bl.feed(np.asarray(A, dtype=np.int16), mA, (0, 0))
+    bl.feed(np.asarray(Bc, dtype=np.int16), mB, (0, 0))
+    res, _ = bl.blend(None, None)
+    return np.clip(res, 0, 255).astype(np.uint8)
+
+
 def repair_spans(eqA, eqB, wgt, spans, fov_a=185.0, fov_b=183.5,
-                 halfw=150):
+                 halfw=150, reroute=True, multiband=True):
     """Merge eqA/eqB under weight wgt (1 = B) with spans repaired.
 
     spans: list of (rect, dx, seam_x) with rect = (y0, y1, x0, x1) the
     detected B-span and dx the measured displacement (B-copy minus
     A-copy); dx None = trim/patch only, no warp. Returns the merged
     uint8 image. Pure function (testable).
+
+    reroute: route again on the repaired pair. Warp moves content after
+    routing, invalidating the seam placement (a fringe shown by the old
+    cut hides behind the new one); the second route is cheap numpy.
+    Falls back to the input weight when routing fails.
+    multiband: Studio-style octave blend over partition masks instead
+    of the single-band ramp (kills the tone step, keeps detail).
     """
     cv2 = __import__("cv2")
     from steadycut.render.corridor_flow import (compose_corrected_B,
@@ -157,11 +186,27 @@ def repair_spans(eqA, eqB, wgt, spans, fov_a=185.0, fov_b=183.5,
                 sx, halfw, F[:, x0:x1], C[:, x0:x1])[:, x0:x1] > 127)
     validA = eroded_validity(_gray(A)) & modelA
     w2 = apply_trim(np.asarray(wgt, dtype=float), trim_rects)
+    if reroute:
+        try:
+            from steadycut.render.seam_route import route_both
+            from steadycut.render.sphere_maps import routed_weight
+            seams = sorted({s[2] for s in spans})
+            polys = route_both(A.astype(np.uint8), Bc.astype(np.uint8),
+                               seams=tuple(seams), halfw=48, width=W,
+                               fov_a=fov_a, fov_b=fov_b)
+            w2, _ = routed_weight(W, H, 4.0, fov_a, fov_b,
+                                  polylines=polys)
+            w2 = apply_trim(np.asarray(w2, dtype=float), trim_rects)
+        except Exception:
+            w2 = apply_trim(np.asarray(wgt, dtype=float), trim_rects)
     w2 = np.where(~validA, 1.0, w2)
     w2 = np.where(~validBc, 0.0, w2)
-    w3 = w2[:, :, None]
     A64 = A.astype(float)
-    merged = Bc.astype(float) * w3 + A64 * (1 - w3)
+    if multiband:
+        merged = multiband_merge(A, Bc, w2, validA, validBc).astype(float)
+    else:
+        w3 = w2[:, :, None]
+        merged = Bc.astype(float) * w3 + A64 * (1 - w3)
     # two-band patch per span where the joint covers (A content, A->B
     # tone). Per-row joint clamp — never paint A where A is blind. Tone
     # refs sampled from single-coverage wings, masked by validity.

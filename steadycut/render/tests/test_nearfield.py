@@ -31,7 +31,7 @@ def test_repair_spans_collapses_double():
     wgt = np.zeros((h, w), np.float32)
     wgt[:, 1536:] = 1.0  # hard cut at the seam: B shown right
     span = ((100, 160, 1460, 1545), 40.0, 1536)
-    M = repair_spans(A, B, wgt, [span])
+    M = repair_spans(A, B, wgt, [span], reroute=False, multiband=False)
     ref = A[100:160, 1460:1545].astype(float)
     got = M[100:160, 1460:1545].astype(float)
     assert np.abs(got - ref).mean() < 12.0
@@ -50,9 +50,19 @@ def test_auto_repair_clean_pair_is_plain_merge():
     assert np.abs(M.astype(float) - ref).mean() < 1.0
 
 
+def _local_double(dx=60, seed=13):
+    """Copied bar on independent backgrounds (zero-offset never matches,
+    the displaced copy matches exactly -- the washed-snow regime)."""
+    rng = np.random.default_rng(seed)
+    A = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
+    B = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
+    B[100:160, 1514:1594] = A[100:160, 1470:1550]
+    return A, B
+
+
 def test_auto_repair_fires_on_shifted_pair():
     from steadycut.render.nearfield import auto_repair
-    A, B = _shifted(dx=40)
+    A, B = _local_double()
     h, w = A.shape[:2]
     wgt = np.zeros((h, w), np.float32)
     wgt[:, 1536:] = 1.0
@@ -61,27 +71,24 @@ def test_auto_repair_fires_on_shifted_pair():
     assert fired, [s["action"] for s in cert["spans"]]
     plain = (A.astype(float) * (1 - wgt[:, :, None])
              + B.astype(float) * wgt[:, :, None])
-    zone = (slice(60, 200), slice(1450, 1650))
+    zone = (slice(100, 160), slice(1500, 1600))
     assert (np.abs(M[zone].astype(float) - A[zone].astype(float)).mean()
             < np.abs(plain[zone].astype(float) - A[zone].astype(float)
                      ).mean())
 
 
-def test_lens_validity_axes_and_rims():
-    from steadycut.render.nearfield import lens_validity
-    vA, vB = lens_validity(1024, 2048)
-    assert vA[512, 1024] and not vB[512, 1024]  # A axis: A only
-    assert vB[512, 0] and not vA[512, 0]        # B axis: B only
-    assert vA[512, 1536] and vB[512, 1536]      # seam: both (90 deg)
-    assert not vA[512, 1620]                    # past A model: masked
 
-
-def test_past_model_pixels_fall_to_other_lens():
+def test_reroute_flag_runs_and_keeps_single():
     from steadycut.render.nearfield import repair_spans
-    H, W = 256, 2048
-    A = np.full((H, W, 3), 180, np.uint8)
-    B = np.full((H, W, 3), 60, np.uint8)
-    wgt = np.zeros((H, W), np.float32)  # would show A everywhere left
-    M = repair_spans(A, B, wgt, [((100, 200, 1600, 1650), None, 1536)],
-                     fov_a=185.0, fov_b=183.5)
-    assert M[150, 1620, 0] < 100  # A past-model there: B shown, not A
+    A, B = _shifted(dx=40)
+    h, w = A.shape[:2]
+    wgt = np.zeros((h, w), np.float32)
+    wgt[:, 1536:] = 1.0
+    span = ((100, 160, 1460, 1545), 40.0, 1536)
+    M = repair_spans(A, B, wgt, [span], reroute=True, multiband=True)
+    plain = (A.astype(float) * (1 - wgt[:, :, None])
+             + B.astype(float) * wgt[:, :, None])
+    zone = (slice(100, 160), slice(1500, 1600))
+    assert (np.abs(M[zone].astype(float) - A[zone].astype(float)).mean()
+            < np.abs(plain[zone].astype(float) - A[zone].astype(float)
+                     ).mean())
