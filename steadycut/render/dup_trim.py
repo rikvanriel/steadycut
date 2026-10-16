@@ -104,21 +104,12 @@ def _scan_band(gA, gB, cv2, jv, sx, x0s, tx, y0, y1,
         return []
     # clamp to the joint: trimming B where only B covers would
     # open a hole (union preserved: A covers the kept rows).
-    # Copies straddle B's coverage edge, so shrink COLS to the
-    # valid run too (rows first, then cols), keeping runs >= 16.
+    # Run-based like the SIFT path (a 32 px template never sits wholly
+    # inside the ~28 px joint; require >=16 valid-col runs instead).
     bx1 = bx0 + TEMPLATE_W
     cols = slice(max(0, bx0 - x0s), min(jv.shape[1], bx1 - x0s))
     sub = jv[y0:y1, cols]
-    rows_ok = sub.all(axis=1)
-    y0k = y0
-    while y0k < y1 and not rows_ok[y0k - y0]:
-        y0k += 1
-    y1k = y1
-    while y1k > y0k and not rows_ok[y1k - 1 - y0]:
-        y1k -= 1
-    if y1k - y0k < 20:
-        return []
-    col_ok = jv[y0k:y1k, cols].all(axis=0)
+    col_ok = sub.all(axis=0)
     xs = np.where(col_ok)[0]
     if len(xs) == 0:
         return []
@@ -132,9 +123,16 @@ def _scan_band(gA, gB, cv2, jv, sx, x0s, tx, y0, y1,
     runs.append((rs, re))
     base = max(0, bx0 - x0s)
     for rs, re in runs:
+        if re + 1 - rs < 16:
+            continue
         ax0, ax1 = x0s + base + rs, x0s + base + re + 1
-        if ax1 - ax0 >= 16:
-            found.append((y0k, y1k, ax0, ax1))
+        # rows where this run holds throughout (rs/re are sub-relative)
+        rsub = jv[y0:y1, base + rs:base + re + 1]
+        rows_ok = rsub.all(axis=1)
+        ys = np.where(rows_ok)[0]
+        if len(ys) < 20:
+            continue
+        found.append((y0 + int(ys[0]), y0 + int(ys[-1]) + 1, ax0, ax1))
     return found
 
 
