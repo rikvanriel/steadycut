@@ -30,8 +30,11 @@ def _texture(img):
 
 def route_seam(eqA, eqB, seam_x, halfw=64, fov_a=185.0, fov_b=183.5):
     """Route one seam. eqA/eqB: full equirects (BGR uint8) in SHARED sphere
-    coordinates — the caller rolls production B tracks (yaw=180) by half
-    width first; unaligned strips compare opposite sides (measured).
+    coordinates — production B tracks (yaw=180) need NO roll: v360 yaw
+    rotates the output image (measured: same lens at yaw180 lands exactly
+    -1024 px, score 1.0), so lens0@yaw0 and lens1@yaw180 share coordinates.
+    Rolling by half width compares opposite globe sides (that bug fed the
+    router garbage cost).
     States clamp to joint-valid columns (analytic, FOVs given). Returns
     polyline (pano-x per row float)."""
     from steadycut.render.sphere_maps import joint_valid_strip
