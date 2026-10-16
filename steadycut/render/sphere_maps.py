@@ -185,6 +185,18 @@ def build_maps(w=2048, h=1024, fov_a=182.2, fov_b=180.6, feather_deg=3.0):
     return out["A"][:2], out["B"][:2], wgt, inc_a, inc_b
 
 
+def full_globe_ok(fov_a, fov_b, ramp_deg=4.0):
+    """Stabilization sweeps the view window anywhere on the globe, so full
+    360 deg coverage is non-negotiable — even where the flat render never
+    looks. Hard bar: fa+fb >= 360 (else true holes; inc_a+inc_b = 180 always,
+    so holes open exactly below 360). Soft check: joint < ramp means the
+    blend ramp eats past coverage into black (validity snapping hardens it
+    into a cut plus smear — measured on an over-narrow fit trim). Returns
+    (hard_ok, joint_deg). Equator binds; off-equator joint only widens."""
+    joint = fov_a + fov_b - 360.0
+    return joint >= 0.0, joint
+
+
 def joint_valid_strip(seam_x, halfw, fov_a=185.0, fov_b=183.5, h=1024,
                       w=2048):
     """Joint-valid mask for a sphere-coordinate corridor strip, in V360

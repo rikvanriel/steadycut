@@ -42,16 +42,25 @@ def _score_profile(pairs, fa, fb):
 
 def select_optics(source, serial, fw, serial_known):
     """Returns (profile_dict, fresh_fit_bool). profile_dict carries fov_a,
-    fov_b, deflare_poly, gain_default, id (or None when refused)."""
+    fov_b, deflare_poly, gain_default, id (or None when refused).
+
+    Full-globe guard: stabilization sweeps the view window anywhere, so a
+    profile whose FOVs sum below 360 deg (true coverage holes) is never
+    served — stored holes are skipped, a fresh hole falls back to bench
+    defaults. Narrow joints (< 4 deg ramp) serve but cert-flag narrow_joint
+    (blend ramp eats past coverage: cut + smear, eye-rejected on fb177)."""
+    from steadycut.render.sphere_maps import full_globe_ok
     pairs = _frames(source)
     if not pairs:
         return {"id": None}, True
     stored = (optics_for(serial, fw) if serial_known else [])
     fresh = fit(*pairs[0])
     ffa, ffb, _, _ = fresh
+    fresh_ok, fresh_joint = full_globe_ok(ffa, ffb)
     scored = [(p, _score_profile(pairs, p["fov_a"], p["fov_b"]))
               for p in stored
-              if "fov_a" in p and "fov_b" in p]
+              if "fov_a" in p and "fov_b" in p
+              and full_globe_ok(p["fov_a"], p["fov_b"])[0]]
     scored.sort(key=lambda r: r[1])
     fresh_score = _score_profile(pairs, ffa, ffb)
     if scored and scored[0][1] <= fresh_score * (1 + TOL_EDGE):
@@ -60,7 +69,14 @@ def select_optics(source, serial, fw, serial_known):
             # Serving a candidate on a second recording IS the confirmation.
             confirm_optics(serial, win["id"], str(source))
             win["status"] = "confirmed"
+        if full_globe_ok(win["fov_a"], win["fov_b"])[1] < 4.0:
+            win["narrow_joint"] = True
         return win, False
+    if not fresh_ok:
+        # The fresh fit opened coverage holes: serve bench defaults (full
+        # globe), never the hole. Selection stays refused.
+        from steadycut.render.stitch import LENS_FOV_A, LENS_FOV_B
+        return {"id": None, "fov_a": LENS_FOV_A, "fov_b": LENS_FOV_B}, True
     if not serial_known:
         return {"id": None, "fov_a": ffa, "fov_b": ffb}, True
     # fresh fit: confirm a nearby candidate or enroll a new one.

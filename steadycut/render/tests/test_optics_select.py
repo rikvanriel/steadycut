@@ -44,7 +44,7 @@ def test_stored_winner_serves_without_fresh_fit(cfg, fake_frames,
 
 def test_nothing_fits_enrolls_candidate(cfg, fake_frames, monkeypatch):
     R.record_measured("S2", model="Insta360 X4", fw="v1")
-    R.record_optics("S2", _prof(180.0, 178.5, label="old"), serial_known=True)
+    R.record_optics("S2", _prof(180.5, 180.0, label="old"), serial_known=True)
     monkeypatch.setattr(S, "fit", lambda A, B: (185.0, 183.5, (0.5, 5.0), []))
     monkeypatch.setattr(S, "_score_profile",
                         lambda pairs, fa, fb: 2.0 if fa < 181 else 0.5)
@@ -69,3 +69,25 @@ def test_no_serial_serves_bench_without_registry(cfg, fake_frames):
     prof, fresh = S.select_optics("clip.insv", "missing", None, False)
     assert prof["id"] is None and fresh is True
     assert R.optics_for("missing") == []
+
+
+def test_hole_profile_never_served(cfg, fake_frames, monkeypatch):
+    # Full-globe guard: stabilization sweeps anywhere, so fa+fb < 360
+    # (coverage holes) is refused even when it scores best.
+    R.record_measured("S4", model="Insta360 X4", fw="v1")
+    R.record_optics("S4", _prof(170.0, 170.0, label="hole"), serial_known=True)
+    monkeypatch.setattr(S, "fit", lambda A, B: (185.0, 183.5, (0.5, 5.0), []))
+    monkeypatch.setattr(S, "_score_profile",
+                        lambda pairs, fa, fb: 0.1 if fa < 175 else 0.5)
+    prof, fresh = S.select_optics("clip.insv", "S4", "v1", True)
+    assert fresh is True  # hole skipped, fresh enrolled, never served
+    assert prof.get("fov_a") != 170.0
+
+
+def test_fresh_hole_falls_back_to_bench(cfg, fake_frames, monkeypatch):
+    # A fresh fit below 360 deg serves bench defaults, never the hole.
+    R.record_measured("S5", model="Insta360 X4", fw="v1")
+    monkeypatch.setattr(S, "fit", lambda A, B: (170.0, 170.0, (0.1, 5.0), []))
+    prof, fresh = S.select_optics("clip.insv", "S5", "v1", True)
+    assert fresh is True and prof["id"] is None
+    assert (prof["fov_a"], prof["fov_b"]) == (182.2, 180.6)

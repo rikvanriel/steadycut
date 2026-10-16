@@ -76,3 +76,15 @@ def test_routed_deviation_recenters_within_coverage():
     poly_far = {512: np.full(1024, 552.0), 1536: np.full(1024, 1536.0)}
     wgt2, _ = routed_weight(2048, 1024, 4.0, polylines=poly_far)
     assert wgt2[512, 552] == 0.0
+
+
+def test_full_globe_ok_hard_bar_and_joint():
+    from steadycut.render.sphere_maps import full_globe_ok
+    # served pairs: union full (stabilization can sweep anywhere)
+    assert full_globe_ok(185.0, 183.5) == (True, 8.5)
+    assert full_globe_ok(182.2, 180.6)[0] is True
+    # below 360: true holes — refused, never served
+    assert full_globe_ok(170.0, 170.0) == (False, -20.0)
+    # over-narrow fit trim: union full but joint 2 deg < 4 deg ramp — the
+    # blend ramp eats past coverage (validity snapping hardens into cut +
+    # smear, eye-REJECTED). Narrow joints cert-flag; holes refuse.
