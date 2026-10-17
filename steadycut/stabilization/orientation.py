@@ -57,18 +57,23 @@ def to_rotvec(q):
     return q[..., 1:] * scale[..., None]
 
 
-def integrate(t, gyro):
+def integrate(t, gyro, q0=None):
     """Quaternion orientation per sample, from angular rate in degrees/second.
 
     Each step composes a small rotation about the instantaneous axis, so the
     axes are combined in the correct order instead of being accumulated
     independently as Euler angles.
+
+    q0 is the start attitude (default identity). Pass an accel-leveled q0
+    when the absolute tilt matters (e.g. projecting rates about world
+    vertical): an identity start tilts the reference by the unknown mount
+    itself.
     """
     rate = np.radians(gyro)
     dt = np.gradient(t)[:, None]
     deltas = from_rotvec(rate * dt)
     out = np.zeros((rate.shape[0], 4))
-    q = np.array([1.0, 0.0, 0.0, 0.0])
+    q = np.array([1.0, 0.0, 0.0, 0.0]) if q0 is None else np.asarray(q0, float)
     for i in range(rate.shape[0]):
         q = _normalise(_mul(q, deltas[i]))
         out[i] = q
