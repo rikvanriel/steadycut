@@ -321,7 +321,6 @@ def main(argv=None) -> int:
             from steadycut.render.seam_route import route_both
             from steadycut.render.stitch import (save_polylines,
                                                  sphere_still)
-            import numpy as np
             cv2 = __import__("cv2")
             eqdir = tmp / "equirects"
             rstill = sphere_still(a.source, stitch, a.start,
@@ -387,7 +386,6 @@ def main(argv=None) -> int:
                     compose_corrected_B, corridor_pair, flow_confidence,
                     flow_strip, joint_valid_strip)
                 from steadycut.render.stitch import sphere_delta_to_lens
-                import numpy as np
                 cv2 = __import__("cv2")
                 eqA = cv2.imread(str(eqdir / "eqA.png"))
                 eqB = cv2.imread(str(eqdir / "eqB.png"))

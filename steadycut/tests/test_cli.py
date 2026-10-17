@@ -107,3 +107,26 @@ def test_a_bare_replace_does_not_survive_it(tmp_path, monkeypatch) -> None:
     with pytest.raises(OSError):
         staged.replace(out)
     assert not out.exists()
+
+
+def test_no_function_local_numpy_shadow():
+    """main() crashed post-bake whenever --repair was off: two try-block
+    'import numpy as np' made np function-local, so the module import
+    never served. No function may re-import a module-level name."""
+    import ast
+    from pathlib import Path
+    tree = ast.parse(Path("steadycut/steadycut.py").read_text())
+    mod_imports = set()
+    for n in tree.body:
+        if isinstance(n, ast.Import):
+            mod_imports.update(a.asname or a.name.split(".")[0]
+                               for a in n.names)
+    bad = []
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for x in ast.walk(n):
+                if isinstance(x, ast.Import):
+                    for a in x.names:
+                        if (a.asname or a.name.split(".")[0]) in mod_imports:
+                            bad.append(f"{n.name}:{x.lineno}")
+    assert not bad, bad
