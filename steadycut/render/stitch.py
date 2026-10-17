@@ -149,7 +149,7 @@ def measure_deflare_scale(source: str, poly: tuple, t: float = 5.0):
     """
     import numpy as np
     key_src = (f"{Path(source).resolve()}|{Path(source).stat().st_size}"
-               f"|{round(t, 1)}|deflare2")
+               f"|{round(t, 1)}|deflare3")
     cache = cache_dir() / "gains.json"
     try:
         db = json.loads(cache.read_text()) if cache.exists() else {}
@@ -176,18 +176,30 @@ def measure_deflare_scale(source: str, poly: tuple, t: float = 5.0):
                 yy, xx = np.mgrid[0:2880, 0:2880]
                 r = np.hypot(xx - 1440, yy - 1440) / 1440
                 g = img.mean(axis=2)
-                flat = (r < 0.85) & (g > 150) & (
+                # rim-inclusive (r<1.0): the seam lives at the rim, and a
+                # mid-field-only fit need not hold there (Jan26 snow-blue
+                # at 1536 survived a mid-field scale). Bright gate drops
+                # the black exterior; neutral gate drops trees/texture.
+                flat = (r < 1.0) & (g > 150) & (
                     np.abs(img[:, :, 1] - img[:, :, 2]) < 15)
                 ratios = []
                 if flat.mean() >= 0.05:
                     exc = img[:, :, 0] - img[:, :, 2]
-                    for i in range(10):
-                        m = flat & (r >= i / 10) & (r < (i + 1) / 10)
-                        if m.sum() < 2000 or pred[i] < 3.0:
-                            continue
-                        got = float(np.median(exc[m]))
-                        if got > 1.0:
-                            ratios.append(got / pred[i])
+                    # rim bins first (the seam lives at r~0.94): a mid-field
+                    # fit need not hold at the rim. Fall back inward only
+                    # when the rim has no clean pixels.
+                    for rmin in (0.8, 0.0):
+                        for i in range(10):
+                            if i / 10 < rmin:
+                                continue
+                            m = flat & (r >= i / 10) & (r < (i + 1) / 10)
+                            if m.sum() < 2000 or pred[i] < 3.0:
+                                continue
+                            got = float(np.median(exc[m]))
+                            if got > 1.0:
+                                ratios.append(got / pred[i])
+                        if ratios:
+                            break
                 s = float(np.median(ratios)) if ratios else 1.0
                 scales.append(min(max(s, 0.0), 2.5))
             scale = (scales[0], scales[1])
