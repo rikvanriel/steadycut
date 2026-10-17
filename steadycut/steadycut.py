@@ -71,10 +71,25 @@ def build_parser() -> argparse.ArgumentParser:
                          "default is measured: 0.15 beat 0.5 on every window "
                          "of a multi-clip validation, and 0.05 bought nothing "
                          "while costing the near field")
+    ap.add_argument("--yaw-corner", type=float, default=None, metavar="HZ",
+                    help="override the travel-policy yaw leash (default from "
+                         "policy, 0.02 ski): lower holds a steadier downhill "
+                         "direction, higher follows turns faster.")
     ap.add_argument("--image-only", action="store_true",
                     help="bounded 2D image stabilisation without telemetry: "
                          "no reframe, no gyro (for cameras with no embedded "
                          "IMU or pre-stabilised footage)")
+    ap.add_argument("--yaw-bias", type=float, default=0.0, metavar="DEG",
+                    help="constant yaw added to the framing path (manual "
+                         "mount-travel offset: positive turns right). "
+                         "Measured per recording by the mount calibration; "
+                         "pass it here until the registry carries it.")
+    ap.add_argument("--yaw-bias-track", default=None, metavar="JSON",
+                    help="time-varying yaw bias [[t, deg], ...], lerped: "
+                         "FOE-measured travel-in-lens anchors for windows "
+                         "where the head spins faster than any leash can "
+                         "follow (e.g. filming through a turn). Overrides "
+                         "--yaw-bias where it covers.")
     return ap
 
 
@@ -450,13 +465,45 @@ def main(argv=None) -> int:
     # Travel policies put yaw on its own leash (the ski policy's measured
     # 0.02 Hz): sustained turns pass, look-arounds do not. Gaze policies pass
     # no leash and keep the legacy single-tau path bit for bit.
-    yaw_corner = policy.yaw_corner_hz
+    yaw_corner = a.yaw_corner if a.yaw_corner is not None \
+        else policy.yaw_corner_hz
     if yaw_corner is not None:
         print(f"CLI| travel yaw leash {yaw_corner} Hz (policy {policy.name})")
+    yaw_adaptive = getattr(policy, "yaw_adaptive_hz", None)
+    if a.yaw_corner is not None:
+        # explicit leash override takes control: no adaptive switching
+        yaw_adaptive = None
+    if yaw_adaptive:
+        print(f"CLI| adaptive yaw leash {yaw_adaptive} Hz in turns")
     out = Path(a.out) if a.out else Path(f"clip_{int(a.start)}s.mp4")
     try:
         pts = build_gyro_path(spec, stamp_offset_ms=offset_ms,
-                              corner_hz=corner, yaw_corner_hz=yaw_corner)
+                              corner_hz=corner, yaw_corner_hz=yaw_corner,
+                              yaw_adaptive_hz=yaw_adaptive)
+        if a.yaw_bias:
+            import dataclasses
+            pts = [dataclasses.replace(p, yaw=float(p.yaw) + a.yaw_bias)
+                   for p in pts]
+            cert["yaw_bias_deg"] = a.yaw_bias
+            print(f"CLI| yaw bias {a.yaw_bias:+.1f}deg (mount-travel)")
+        if a.yaw_bias_track:
+            import dataclasses
+            anchors = sorted(json.load(open(a.yaw_bias_track)),
+                             key=lambda r: r[0])
+
+            def _lerp(tv):
+                if tv <= anchors[0][0]:
+                    return anchors[0][1]
+                for (t0, b0), (t1, b1) in zip(anchors, anchors[1:]):
+                    if tv <= t1:
+                        f = (tv - t0) / (t1 - t0) if t1 > t0 else 0.0
+                        return b0 + f * (b1 - b0)
+                return anchors[-1][1]
+
+            pts = [dataclasses.replace(p, yaw=float(p.yaw) + _lerp(p.t))
+                   for p in pts]
+            cert["yaw_bias_track"] = a.yaw_bias_track
+            print(f"CLI| yaw bias track {len(anchors)} anchors")
         if a.no_level:
             cert["level"] = {"applied": False, "reason": "flag"}
         else:
@@ -585,6 +632,7 @@ def main(argv=None) -> int:
 
     cert["corner_hz"] = corner
     cert["yaw_corner_hz"] = yaw_corner  # None = legacy single-tau path
+    cert["yaw_adaptive_hz"] = yaw_adaptive
     cert_path = out.with_suffix(".cert.json")
     cert_path.write_text(json.dumps(cert, indent=1, default=str))
     print(f"CLI| certificate {cert_path}")

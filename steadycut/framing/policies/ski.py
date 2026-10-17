@@ -53,6 +53,7 @@ POLICY = register(FramingPolicy(
                "ski tips rising into frame in turns (transient, ignore)"),
     pitch=PITCH_DEFAULT,
     yaw_corner_hz=YAW_CORNER_HZ,
+    yaw_adaptive_hz=0.16,  # ~1 s leash inside sustained turns
     corner_hz=CORNER_HZ,
     search=None,                    # grade-aware pitch is future work
     hint="grade-aware framing pitch is not implemented yet; pass --pitch",

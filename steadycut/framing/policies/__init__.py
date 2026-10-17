@@ -103,6 +103,10 @@ class FramingPolicy:
     # end of the ladder gets presented as a usable pitch.
     search: "PitchSearch | Callable[[object], PitchSearch | None] | None" = None
     yaw_corner_hz: float | None = None  # travel leash; None = legacy corner
+    yaw_adaptive_hz: float | None = None  # fast leash in sustained turns;
+    # None = fixed leash (legacy). Set on travel policies: the leash runs
+    # fast through carved turns instead of ending up behind them, while
+    # sub-2.5 s look-arounds never engage it and stay held.
     corner_hz: float | None = None  # policy default corner; None = CLI default
     hint: str = "re-try with --pitch set by eye"
     notes: str = ""

@@ -259,7 +259,8 @@ def correction_euler_axes(t, gyro, tau_s, axis_map=None, yaw_tau_s=None):
 
 def build_gyro_path(spec: ClipSpec, stamp_offset_ms: float = 0.0,
                     corner_hz: float = 0.15, drift_ppm: float = 0.0,
-                    drift_ref_s: float = 0.0, yaw_corner_hz=None):
+                    drift_ref_s: float = 0.0, yaw_corner_hz=None,
+                    yaw_adaptive_hz=None):
     """Stabilisation path for a clip: gyro correction + framing, thinned.
 
     corner_hz 0.15 is the MEASURED production default (see correction_axes);
@@ -297,6 +298,8 @@ def build_gyro_path(spec: ClipSpec, stamp_offset_ms: float = 0.0,
     tau = 1.0 / (2.0 * math.pi * corner_hz)
     yaw_tau = (1.0 / (2.0 * math.pi * yaw_corner_hz)
                if yaw_corner_hz and yaw_corner_hz != corner_hz else None)
+    if yaw_adaptive_hz and yaw_tau:
+        yaw_tau = (yaw_tau, 1.0 / (2.0 * math.pi * yaw_adaptive_hz))
     axis_map = spec.profile.axis_map if spec.profile is not None else None
     qy, qp, qr = correction_euler_axes(tw, gw, tau, axis_map,
                                        yaw_tau_s=yaw_tau)

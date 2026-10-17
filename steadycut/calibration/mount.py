@@ -155,44 +155,6 @@ def alternating_bearing(t, yaw_rate_world, h_force_world):
     return float(az), (n_l, n_r), True
 
 
-def level_start(t, accel_body, gyro_body=None):
-    """Start attitude with body pitch/roll leveled from the accelerometer.
-
-    Minimal rotation mapping the mean specific-force direction to +z.
-    Uses the straightest window (lowest body-rate magnitude — frame
-    invariant, needs no attitude): a mean taken in a turn reversal would
-    bake ~1 g of transient into the vertical. Falls back to the first
-    3 s. Yaw stays arbitrary (identity) — only the tilt matters for a
-    world-vertical reference.
-    """
-    t = np.asarray(t, float)
-    a = np.asarray(accel_body, float)
-    n = len(a)
-    dt = float(np.median(np.diff(t))) if n > 1 else 0.01
-    i0, i1 = 0, min(n, max(1, int(round(3.0 / dt))))
-    if gyro_body is not None:
-        g = np.asarray(gyro_body, float)
-        mag = np.linalg.norm(g, axis=1)
-        w = max(1, int(round(1.0 / dt)))
-        best, bestm = None, 4.0
-        for i in range(0, max(1, n - w), w // 2):
-            m = float(mag[i:i + w].mean())
-            if m < bestm:
-                bestm, best = m, (i, i + w)
-        if best is not None:
-            i0, i1 = best
-    v = a[i0:i1].mean(axis=0)
-    v = v / (np.linalg.norm(v) + 1e-12)
-    # minimal rotation v -> +z: axis v x z, angle acos(v.z)
-    axis = np.array([v[1], -v[0], 0.0])
-    s = float(np.linalg.norm(axis))
-    if s < 1e-9:
-        return np.array([1.0, 0.0, 0.0, 0.0])
-    axis = axis / s
-    ang = float(np.arccos(np.clip(v[2], -1.0, 1.0)))
-    return np.concatenate([[np.cos(ang / 2)], np.sin(ang / 2) * axis])
-
-
 def travel_offset(t, gyro_body, accel_body, forward_axis=2):
     """Mount offset direction in BODY coordinates from turn segments.
 
@@ -213,7 +175,7 @@ def travel_offset(t, gyro_body, accel_body, forward_axis=2):
     # coarse global attitude for SELECTION only (drift corrupts the
     # projection slowly; sustained-rate detection tolerates it). Leveled
     # start: identity would tilt the reference by the mount itself.
-    qg = O.integrate(t, g, q0=level_start(t, a, g))
+    qg = O.integrate(t, g, q0=O.level_start(t, a, g))
     # world-up expressed IN BODY coords (conjugate direction!): dotting
     # body gyro with body-z-in-world mixes frames and corrupts the sign
     # the moment lean/pitch tilt body-z away from world-up.

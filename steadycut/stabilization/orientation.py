@@ -209,18 +209,23 @@ def to_euler_zyx(q):
 
 def _smooth_1d(x, t, tau_s):
     """Scalar twin of smooth(): exponential low pass, forward then reversed
-    to remove the delay, so a constant-rate sweep comes through unchanged."""
+    to remove the delay, so a constant-rate sweep comes through unchanged.
+    tau_s may be a per-sample array (adaptive leash: fast in turns, slow
+    otherwise); the same alphas run both directions."""
     x = np.asarray(x, float)
-    if tau_s <= 0:
+    n = len(x)
+    if np.all(np.asarray(tau_s) <= 0):
         return x.copy()
     dt = float(np.median(np.diff(t)))
-    alpha = 1.0 - np.exp(-dt / tau_s)
+    tau = np.broadcast_to(np.asarray(tau_s, float), (n,)).copy()
+    tau[tau <= 0] = np.inf
+    alpha = 1.0 - np.exp(-dt / tau)
     out = x.copy()
-    for i in range(1, len(x)):
-        out[i] = out[i - 1] + alpha * (x[i] - out[i - 1])
+    for i in range(1, n):
+        out[i] = out[i - 1] + alpha[i] * (x[i] - out[i - 1])
     back = out.copy()
-    for i in range(len(x) - 2, -1, -1):
-        back[i] = back[i + 1] + alpha * (out[i] - back[i + 1])
+    for i in range(n - 2, -1, -1):
+        back[i] = back[i + 1] + alpha[i] * (out[i] - back[i + 1])
     return back
 
 
@@ -252,12 +257,35 @@ def smooth_channels(q_raw, t, tau_yaw_s, tau_other_s):
     Gimbal caveat: at pitch +-90 deg y2/r are not separable (same branch as
     to_euler_zxy). Ski/MTB pitch never goes there; a policy that needs the
     poles wants a different decomposition, not a wider tolerance here.
+
+    tau_yaw_s may be a (slow_s, fast_s) pair: the leash runs fast during
+    sustained turns (IMU turn detector below) and slow otherwise, so a
+    144-degree carved turn is followed instead of ending up behind it,
+    while sub-2.5 s look-arounds never engage the fast leash and stay
+    held. A scalar is the legacy fixed leash, bit for bit.
     """
     e = to_euler_zxy(q_raw)
     y = np.unwrap(np.radians(e[:, 0]))
     p = np.unwrap(np.radians(e[:, 1]))
     r = np.unwrap(np.radians(e[:, 2]))
-    return _zxy_to_quat(_smooth_1d(y, t, tau_yaw_s),
+    if isinstance(tau_yaw_s, tuple):
+        slow_s, fast_s = tau_yaw_s
+        # body yaw rate from consecutive attitudes (robust where Euler
+        # angles flip: violent rolls make to_euler_zxy discontinuous and
+        # its gradient crosses zero constantly, so the detector never
+        # engages). Signed lowpass: shake cancels, sustained turns pass.
+        dq = relative(q_raw[:-1], q_raw[1:])
+        dt = float(np.median(np.diff(t)))
+        wy = to_rotvec(dq)[:, 1] / dt  # rad/s about body-Y (yaw channel)
+        wyaw = _smooth_1d(np.degrees(wy), t[:-1], 2.0)
+        pad = np.zeros(len(t))
+        pad[:len(wyaw)] = wyaw
+        pad[len(wyaw):] = wyaw[-1]
+        turning = turn_state(t, pad)
+        tau = np.where(turning, fast_s, slow_s)
+    else:
+        tau = tau_yaw_s
+    return _zxy_to_quat(_smooth_1d(y, t, tau),
                         _smooth_1d(p, t, tau_other_s),
                         _smooth_1d(r, t, tau_other_s))
 
@@ -271,6 +299,82 @@ def relative(q_raw, q_smooth):
     any absolute offset, such as the mount angle.
     """
     return _normalise(_mul(_conj(q_raw), q_smooth))
+
+
+def level_start(t, accel_body, gyro_body=None):
+    """Start attitude with body pitch/roll leveled from the accelerometer.
+
+    Minimal rotation mapping the mean specific-force direction to +z.
+    Uses the straightest window (lowest body-rate magnitude — frame
+    invariant, needs no attitude): a mean taken in a turn reversal would
+    bake ~1 g of transient into the vertical. Falls back to the first
+    3 s. Yaw stays arbitrary (identity) — only the tilt matters for a
+    world-vertical reference.
+    """
+    t = np.asarray(t, float)
+    a = np.asarray(accel_body, float)
+    n = len(a)
+    dt = float(np.median(np.diff(t))) if n > 1 else 0.01
+    i0, i1 = 0, min(n, max(1, int(round(3.0 / dt))))
+    if gyro_body is not None:
+        g = np.asarray(gyro_body, float)
+        mag = np.linalg.norm(g, axis=1)
+        w = max(1, int(round(1.0 / dt)))
+        best, bestm = None, 4.0
+        for i in range(0, max(1, n - w), w // 2):
+            m = float(mag[i:i + w].mean())
+            if m < bestm:
+                bestm, best = m, (i, i + w)
+        if best is not None:
+            i0, i1 = best
+    v = a[i0:i1].mean(axis=0)
+    v = v / (np.linalg.norm(v) + 1e-12)
+    # minimal rotation v -> +z: axis v x z, angle acos(v.z)
+    axis = np.array([v[1], -v[0], 0.0])
+    s = float(np.linalg.norm(axis))
+    if s < 1e-9:
+        return np.array([1.0, 0.0, 0.0, 0.0])
+    axis = axis / s
+    ang = float(np.arccos(np.clip(v[2], -1.0, 1.0)))
+    return np.concatenate([[np.cos(ang / 2)], np.sin(ang / 2) * axis])
+
+
+def turn_state(t, rate, enter_s=2.5, exit_s=1.0, enter_dps=6.0,
+               exit_dps=3.0, pad_s=1.0):
+    """Sustained-turn mask with hysteresis: enter after enter_s above
+    enter_dps, exit after exit_s below exit_dps, dilated by pad_s so the
+    fast leash covers entries/exits. Brief glances (< enter_s) never
+    enter; the forward-backward filter smooths the edges that remain."""
+    t = np.asarray(t, float)
+    r = np.abs(np.asarray(rate, float))
+    n = len(t)
+    dt = float(np.median(np.diff(t))) if n > 1 else 0.01
+    ne, nx, npad = (max(1, int(round(enter_s / dt))),
+                    max(1, int(round(exit_s / dt))),
+                    int(round(pad_s / dt)))
+    on = np.zeros(n, bool)
+    state, c_on, c_off = False, 0, 0
+    for i in range(n):
+        if r[i] > enter_dps:
+            c_on += 1
+            c_off = 0
+        elif r[i] < exit_dps:
+            c_off += 1
+            c_on = 0
+        else:
+            c_off = 0
+            # dead band: hold run-up, keep counting exit only when low
+        if not state and c_on >= ne:
+            state = True
+        if state and c_off >= nx:
+            state = False
+        on[i] = state
+    if npad > 0 and on.any():
+        # dilate each contiguous block (not the bbox: inter-turn glides
+        # keep the slow leash so glances between turns are still held)
+        w = np.ones(2 * npad + 1)
+        on = np.convolve(on.astype(float), w, mode="same") > 0
+    return on
 
 
 def correction_axes(t, gyro, tau_s, axis_map=None, yaw_tau_s=None):
