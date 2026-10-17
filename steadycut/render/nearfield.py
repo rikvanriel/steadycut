@@ -97,12 +97,21 @@ def lens_validity(h, w, fov_a=185.0, fov_b=183.5):
     return (incA <= np.radians(fov_a) / 2, incB <= np.radians(fov_b) / 2)
 
 
-def eroded_validity(gray, thresh=8, erode_px=ERODE_PX):
-    """Pixels safely inside a render's coverage (fringe excluded)."""
+def eroded_validity(gray, thresh=8, erode_px=ERODE_PX, bright_keep=100):
+    """Pixels safely inside a render's coverage (fringe excluded).
+
+    Blind erosion also kills bright content at the FOV edge (a yellow
+    sign's middle 8 px: both lenses erode it, the merge shows a gap that
+    reads as a duplicate/split). Bright pixels are real content, not
+    black-smear (smear is a dark mix), so they are restored: validity is
+    eroded-mask OR bright. Dark smear stays dead; the tone stages correct
+    what remains.
+    """
     cv2 = __import__("cv2")
-    mask = (np.asarray(gray) > thresh).astype(np.uint8)
+    g = np.asarray(gray)
+    mask = (g > thresh).astype(np.uint8)
     dist = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
-    return dist > erode_px
+    return (dist > erode_px) | (g > bright_keep)
 
 
 def residual_level(ea, eb, wgt, validA=None, validB=None, max_dn=8.0,

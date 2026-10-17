@@ -85,3 +85,33 @@ def route_both(eqA, eqB, seams=(512, 1536), halfw=64, width=2048,
         x = int(s * eqA.shape[1] / width)
         out[s] = route_seam(eqA, eqB, x, halfw, fov_a, fov_b)
     return out
+
+
+def route_weight(polys, wgt_meridian, ramp_px=46):
+    """Blend weight with the ramp recentered on routed polylines.
+
+    polys: {seam_x: polyline (pano-x per row)}. Polarity (which side is
+    lens A) is read off the meridian weight's local gradient — never
+    assumed. Outside the routed bands the meridian weight stands.
+    """
+    w = np.asarray(wgt_meridian, dtype=float).copy()
+    h, W = w.shape
+    for sx, poly in polys.items():
+        poly = np.asarray(poly, float)
+        if len(poly) != h:
+            continue
+        x0 = int(sx - 100)
+        x1 = int(sx + 100)
+        dirn = float(np.sign(w[512, min(W - 1, sx + 10)]
+                             - w[512, max(0, sx - 10)])) or 1.0
+        xs = np.arange(max(0, x0), min(W, x1))[None, :].repeat(h, axis=0)
+        pp = np.clip(poly, 0, W - 1)[:, None]
+        ramp = np.clip(((xs - pp) * dirn / ramp_px) + 0.5, 0, 1)
+        # match meridian endpoints: scale to its local min/max so the
+        # routed ramp joins seamlessly where it meets the meridian
+        lo = float(w[:, max(0, x0):min(W, x1)].min())
+        hi = float(w[:, max(0, x0):min(W, x1)].max())
+        w[:, max(0, x0):min(W, x1)] = np.where(
+            (xs >= pp - ramp_px) & (xs <= pp + ramp_px),
+            lo + (hi - lo) * ramp, w[:, max(0, x0):min(W, x1)])
+    return w

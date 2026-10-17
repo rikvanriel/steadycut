@@ -104,25 +104,34 @@ def mask_path(lens_fov_a: float, ramp_deg: float,
     return dst
 
 
-def deflare_frame(lens_fov: float, poly: tuple, scale: float = 1.0,
+def deflare_frame(lens_fov: float, poly: tuple, scale=1.0,
                   size: int = 2880, center: float = 1440.0) -> Path:
     """Cached blue-excess field for one lens: blend-subtracted fast.
 
     geq per frame costs ~1 fps; a static correction frame subtracted with the
     SIMD blend filter costs nothing per frame. Generated with numpy (exact
     polynomial, no geq parsing risk), cached per body curve. scale is the
-    per-clip flare magnitude (measure_deflare_scale): the static poly fits
-    one sun, and the wrong sun's excess differs by 2x (Jan26 B sky carries
-    +22 DN the static frame under-corrects). Cached per curve+scale.
+    per-clip flare (measure_deflare_scale): float, or a 10-list of
+    per-radial-bin scales (this sun's shape, not just its magnitude).
+    Cached per curve+scale.
     """
     import numpy as np
-    key = "_".join(f"{c:g}" for c in poly) + f"_x{scale:.3f}"
+    import json as _json
+    key = ("_".join(f"{c:g}" for c in poly) + "_x" +
+           (_json.dumps(scale) if isinstance(scale, list)
+            else f"{float(scale):.3f}"))
     dst = cache_dir() / f"deflare_{key}_{size}.png"
     if dst.exists():
         return dst
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     r = np.hypot(xx - center, yy - center) / center
-    excess = scale * np.polyval(np.array(poly), np.clip(r, 0, 1.05))
+    base = np.polyval(np.array(poly), np.clip(r, 0, 1.05))
+    if isinstance(scale, list):
+        s = np.interp(np.clip(r, 0, 1.0) * 10 - 0.5, np.arange(10),
+                      np.asarray(scale, float))
+        excess = base * np.clip(s, 0, 2.5)
+    else:
+        excess = float(scale) * base
     cv2 = __import__("cv2")
     img = np.zeros((size, size, 3), np.uint8)
     img[:, :, 0] = np.clip(excess, 0, 255).astype(np.uint8)
@@ -149,7 +158,7 @@ def measure_deflare_scale(source: str, poly: tuple, t: float = 5.0):
     """
     import numpy as np
     key_src = (f"{Path(source).resolve()}|{Path(source).stat().st_size}"
-               f"|{round(t, 1)}|deflare3")
+               f"|{round(t, 1)}|deflare4")
     cache = cache_dir() / "gains.json"
     try:
         db = json.loads(cache.read_text()) if cache.exists() else {}
@@ -182,26 +191,38 @@ def measure_deflare_scale(source: str, poly: tuple, t: float = 5.0):
                 # the black exterior; neutral gate drops trees/texture.
                 flat = (r < 1.0) & (g > 150) & (
                     np.abs(img[:, :, 1] - img[:, :, 2]) < 15)
-                ratios = []
+                # per-BIN scale (shape, not just magnitude): the static
+                # poly's shape is one sun's; this sun differs by radius.
+                # Rim bins first (the seam lives at r~0.94); fall back
+                # inward only when the rim is empty. Smoothed over radius
+                # (noisy bins must not whip the correction).
+                bin_s = np.full(10, np.nan)
                 if flat.mean() >= 0.05:
                     exc = img[:, :, 0] - img[:, :, 2]
-                    # rim bins first (the seam lives at r~0.94): a mid-field
-                    # fit need not hold at the rim. Fall back inward only
-                    # when the rim has no clean pixels.
                     for rmin in (0.8, 0.0):
                         for i in range(10):
-                            if i / 10 < rmin:
+                            if i / 10 < rmin or not np.isnan(bin_s[i]):
                                 continue
                             m = flat & (r >= i / 10) & (r < (i + 1) / 10)
                             if m.sum() < 2000 or pred[i] < 3.0:
                                 continue
                             got = float(np.median(exc[m]))
                             if got > 1.0:
-                                ratios.append(got / pred[i])
-                        if ratios:
+                                bin_s[i] = min(max(got / pred[i], 0.0),
+                                               2.5)
+                        if not np.isnan(bin_s[8:]).all():
                             break
-                s = float(np.median(ratios)) if ratios else 1.0
-                scales.append(min(max(s, 0.0), 2.5))
+                if np.isnan(bin_s).all():
+                    scales.append(1.0)
+                    continue
+                # fill gaps from neighbors, smooth, fall back to 1.0 where
+                # the model has no support
+                xs10 = np.arange(10)
+                ok = ~np.isnan(bin_s)
+                filled = np.interp(xs10, xs10[ok], bin_s[ok],
+                                   left=bin_s[ok][0], right=bin_s[ok][-1])
+                sm = np.convolve(filled, [0.25, 0.5, 0.25], mode="same")
+                scales.append(sm.tolist())
             scale = (scales[0], scales[1])
             db[key_src] = list(scale)
             cache.write_text(json.dumps(db))
@@ -296,8 +317,8 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
                                     start if start is not None else 5.0)
     if not isinstance(scl, (tuple, list)):
         scl = (float(scl), float(scl))
-    dbA = deflare_frame(spec.lens_fov_a, spec.deflare_poly, float(scl[0]))
-    dbB = deflare_frame(spec.lens_fov_b, spec.deflare_poly, float(scl[1]))
+    dbA = deflare_frame(spec.lens_fov_a, spec.deflare_poly, scl[0])
+    dbB = deflare_frame(spec.lens_fov_b, spec.deflare_poly, scl[1])
     gb, gg, gr = gain
     a_out, b_out = workdir / "lensA.mp4", workdir / "lensB.mp4"
 
@@ -414,9 +435,9 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
         if not isinstance(scl, (tuple, list)):
             scl = (float(scl), float(scl))
         dbA = cv2.imread(str(deflare_frame(
-            spec.lens_fov_a, spec.deflare_poly, float(scl[0]))))[:, :, 0]
+            spec.lens_fov_a, spec.deflare_poly, scl[0])))[:, :, 0]
         dbB = cv2.imread(str(deflare_frame(
-            spec.lens_fov_b, spec.deflare_poly, float(scl[1]))))[:, :, 0]
+            spec.lens_fov_b, spec.deflare_poly, scl[1])))[:, :, 0]
         if dbA.shape[:2] != a.shape[:2]:
             dbA = cv2.resize(dbA, (a.shape[1], a.shape[0]))
         if dbB.shape[:2] != a.shape[:2]:
@@ -454,6 +475,22 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
             shutil.copy(eq[1], kd / "eqB.png")
         wgt, _ = blend_weight(w, h, spec.ramp_deg, spec.lens_fov_a,
                                 spec.lens_fov_b)
+        if getattr(spec, "seam", "meridian") == "routed":
+            # route on uncorrected pixels (texture cost is tone-blind),
+            # then every stage below shares the routed weight
+            from steadycut.render.seam_route import (route_both,
+                                                    route_weight)
+            if spec.seam_path:
+                polys = load_polylines(spec.seam_path)
+            else:
+                polys = route_both(ea.astype(np.uint8),
+                                   eb.astype(np.uint8))
+                print(f"CLI| routed seams: " +
+                      ", ".join(f"{s}:{np.median(p):.0f}" +
+                                f"(range {p.min():.0f}-{p.max():.0f})"
+                                for s, p in sorted(polys.items())))
+            if polys:
+                wgt = route_weight(polys, wgt)
         w3 = wgt[:, :, None]
         if ea.shape[:2] != (h, w):
             ea = cv2.resize(ea, (w, h))
@@ -493,7 +530,8 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
                           f" dx {s['dx']} votes {s['votes']}: {s['action']}")
         dst = (cache_dir() /
                f"still_{Path(source).stem}_t{t:g}_"
-               f"F{spec.lens_fov_a:g}-{spec.lens_fov_b:g}_R{spec.ramp_deg:g}.png")
+               f"F{spec.lens_fov_a:g}-{spec.lens_fov_b:g}_R{spec.ramp_deg:g}"
+               f"_S{getattr(spec, 'seam', 'meridian')}.png")
         cv2.imwrite(str(dst), img)
         return dst
 
