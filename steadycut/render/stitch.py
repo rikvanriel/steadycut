@@ -54,6 +54,8 @@ class StitchSpec:
     lens_fov_b: float = LENS_FOV_B
     ramp_deg: float = RAMP_DEG
     deflare_poly: tuple = DEFLARE_POLY
+    deflare_scale: tuple | None = None  # None = measure per clip (A, B);
+    # the static poly fits one sun, per-lens scale fits this one
     gain: tuple | None = None  # None = measure per clip; else (B,G,R) + flag
     optics_id: str | None = None  # registry optics profile serving this render
     leveling: tuple | None = None  # (pos_frame, neg_frame) seam softener or None
@@ -102,22 +104,25 @@ def mask_path(lens_fov_a: float, ramp_deg: float,
     return dst
 
 
-def deflare_frame(lens_fov: float, poly: tuple,
+def deflare_frame(lens_fov: float, poly: tuple, scale: float = 1.0,
                   size: int = 2880, center: float = 1440.0) -> Path:
-    """Cached static blue-excess field for one lens: blend-subtracted fast.
+    """Cached blue-excess field for one lens: blend-subtracted fast.
 
     geq per frame costs ~1 fps; a static correction frame subtracted with the
     SIMD blend filter costs nothing per frame. Generated with numpy (exact
-    polynomial, no geq parsing risk), cached per body curve.
+    polynomial, no geq parsing risk), cached per body curve. scale is the
+    per-clip flare magnitude (measure_deflare_scale): the static poly fits
+    one sun, and the wrong sun's excess differs by 2x (Jan26 B sky carries
+    +22 DN the static frame under-corrects). Cached per curve+scale.
     """
     import numpy as np
-    key = "_".join(f"{c:g}" for c in poly)
+    key = "_".join(f"{c:g}" for c in poly) + f"_x{scale:.3f}"
     dst = cache_dir() / f"deflare_{key}_{size}.png"
     if dst.exists():
         return dst
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     r = np.hypot(xx - center, yy - center) / center
-    excess = np.polyval(np.array(poly), np.clip(r, 0, 1.05))
+    excess = scale * np.polyval(np.array(poly), np.clip(r, 0, 1.05))
     cv2 = __import__("cv2")
     img = np.zeros((size, size, 3), np.uint8)
     img[:, :, 0] = np.clip(excess, 0, 255).astype(np.uint8)
@@ -125,16 +130,91 @@ def deflare_frame(lens_fov: float, poly: tuple,
     return dst
 
 
-def measure_gain(source: str, t: float = 5.0) -> tuple:
-    """Per-clip rim-median gain (lens B toward A), cached per file.
+def measure_deflare_scale(source: str, poly: tuple, t: float = 5.0):
+    """Per-lens flare magnitude (A, B) for the static deflare poly.
 
-    Auto-exposure moves per clip, so this is measured, not stored: one frame
-    per track, median over the rim annulus (the only world both lenses
-    share), B/A per channel. Falls back to GAIN_DEFAULT on any failure, and
-    the caller must record which in the certificate.
+    The two lenses flare differently (Jan26: A a +3 white rim ring, B +22
+    blue sky flare) — a shared scale fixes the average and overshoots the
+    cleaner lens. Ratios measured blue-excess against the poly prediction
+    per radial bin, median per lens. 1.0 when a lens shows nothing to
+    scale. Clamped 0..2.5. Cached per file+t. Returns (scale_A, scale_B).
+
+    Extracts both lens frames at the render time, takes flat bright pixels
+    (sky/snow: bright + neutral, mid-field disk so scene gradients don't
+    pose as flare), and ratios measured blue-excess (B minus neutral
+    baseline R) against the poly prediction per radial bin. Median per
+    lens over bins with real predicted flare; 1.0 when nothing is
+    predicted and little is seen (no flare to scale). Clamped 0..2.5:
+    a blind scale-up paints blue where the model has no support.
     """
     import numpy as np
-    key_src = f"{Path(source).resolve()}|{Path(source).stat().st_size}"
+    key_src = (f"{Path(source).resolve()}|{Path(source).stat().st_size}"
+               f"|{round(t, 1)}|deflare2")
+    cache = cache_dir() / "gains.json"
+    try:
+        db = json.loads(cache.read_text()) if cache.exists() else {}
+        if key_src in db:
+            v = db[key_src]
+            return tuple(v) if isinstance(v, list) else (1.0, 1.0)
+    except (OSError, ValueError):
+        db = {}
+    scale = (1.0, 1.0)
+    try:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            for trk, tag in ((0, "A"), (1, "B")):
+                subprocess.run(
+                    f"ffmpeg -hide_banner -v error -ss {t} -i {source} "
+                    f"-map 0:v:{trk} -frames:v 1 -y {tmp}/{tag}.png",
+                    shell=True, check=True, timeout=120)
+            cv2 = __import__("cv2")
+            pred = np.polyval(np.array(poly, float),
+                              np.clip(np.linspace(0, 1.0, 10), 0, 1.05))
+            scales = []
+            for tag in ("A", "B"):
+                img = cv2.imread(f"{tmp}/{tag}.png").astype(np.float32)
+                yy, xx = np.mgrid[0:2880, 0:2880]
+                r = np.hypot(xx - 1440, yy - 1440) / 1440
+                g = img.mean(axis=2)
+                flat = (r < 0.85) & (g > 150) & (
+                    np.abs(img[:, :, 1] - img[:, :, 2]) < 15)
+                ratios = []
+                if flat.mean() >= 0.05:
+                    exc = img[:, :, 0] - img[:, :, 2]
+                    for i in range(10):
+                        m = flat & (r >= i / 10) & (r < (i + 1) / 10)
+                        if m.sum() < 2000 or pred[i] < 3.0:
+                            continue
+                        got = float(np.median(exc[m]))
+                        if got > 1.0:
+                            ratios.append(got / pred[i])
+                s = float(np.median(ratios)) if ratios else 1.0
+                scales.append(min(max(s, 0.0), 2.5))
+            scale = (scales[0], scales[1])
+            db[key_src] = list(scale)
+            cache.write_text(json.dumps(db))
+    except Exception:
+        pass
+    return scale if isinstance(scale, tuple) else (1.0, 1.0)
+
+
+def measure_gain(source: str, t: float = 5.0) -> tuple:
+    """Per-clip gain (lens B toward A), cached per file+time.
+
+    Snow-first: median over neutral-bright mid-field pixels (the same
+    illuminant as the seam content). Rim-annulus fallback when no snow:
+    rim gain measured on edges hurts snow, and AE drifts across a clip,
+    so the cache key carries the measurement time and callers pass the
+    render time, not a fixed 5 s. Neutral scalar for snow (hue matches);
+    per-channel rim legacy below. Falls back to GAIN_DEFAULT on failure.
+
+    Auto-exposure moves per clip, so this is measured, not stored: one
+    frame per track at the render time. The caller records which in the
+    certificate.
+    """
+    import numpy as np
+    key_src = (f"{Path(source).resolve()}|{Path(source).stat().st_size}"
+               f"|{round(t, 1)}")
     cache = cache_dir() / "gains.json"
     try:
         db = json.loads(cache.read_text()) if cache.exists() else {}
@@ -153,14 +233,35 @@ def measure_gain(source: str, t: float = 5.0) -> tuple:
                     shell=True, check=True, timeout=120)
             yy, xx = np.mgrid[0:2880, 0:2880]
             r = np.hypot(xx - 1440, yy - 1440)
-            m = (r >= 1350) & (r < 1440)
-            meds = []
-            for tag in ("A", "B"):
-                img = cv2.imread(f"{tmp}/{tag}.png").astype(np.float32)
-                meds.append(np.median(img[m].reshape(-1, 3), axis=0))
-            a, b = meds
-            gains = tuple(float(x) for x in a / np.maximum(b, 1))
-            gains = tuple(min(max(g, 0.9), 1.1) for g in gains)  # sanity
+            imgs = {tag: cv2.imread(f"{tmp}/{tag}.png").astype(np.float32)
+                    for tag in ("A", "B")}
+            # Snow first (mid-field, same illuminant as the seam content):
+            # rim-annulus gain measured on edges actively hurts snow (Jan26:
+            # rim 1.005 match, snow B/A 1.02 — the rim boost doubled the
+            # snow step). Neutral scalar: snow hue already matches (B-R
+            # within 2); per-channel risks the Feb21 green tint.
+            snow = {}
+            for tag, img in imgs.items():
+                g = img.mean(axis=2)
+                m = ((r < 1200) & (g > 150)
+                     & (np.abs(img[:, :, 0] - img[:, :, 2]) < 20)
+                     & (np.abs(img[:, :, 1] - img[:, :, 2]) < 20))
+                snow[tag] = (m.mean(), np.median(img[m].reshape(-1, 3),
+                                                 axis=0) if m.any() else None)
+            if (snow["A"][1] is not None and snow["B"][1] is not None
+                    and snow["A"][0] > 0.10 and snow["B"][0] > 0.10):
+                g = float(snow["A"][1].mean() / snow["B"][1].mean())
+                g = min(max(g, 0.9), 1.1)
+                gains = (g, g, g)
+            else:
+                m = (r >= 1350) & (r < 1440)
+                meds = []
+                for tag in ("A", "B"):
+                    meds.append(np.median(imgs[tag][m].reshape(-1, 3),
+                                          axis=0))
+                a, b = meds
+                gains = tuple(float(x) for x in a / np.maximum(b, 1))
+                gains = tuple(min(max(g, 0.9), 1.1) for g in gains)  # sanity
             db[key_src] = list(gains)
             cache.write_text(json.dumps(db))
     except Exception:
@@ -177,7 +278,14 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
     OUTSIDE the sphere graph; see sphere_filtergraph for why that matters.
     Two outputs from one decode via split, so the source is read once.
     """
-    db = deflare_frame(spec.lens_fov_a, spec.deflare_poly)
+    scl = spec.deflare_scale
+    if scl is None:
+        scl = measure_deflare_scale(source, spec.deflare_poly,
+                                    start if start is not None else 5.0)
+    if not isinstance(scl, (tuple, list)):
+        scl = (float(scl), float(scl))
+    dbA = deflare_frame(spec.lens_fov_a, spec.deflare_poly, float(scl[0]))
+    dbB = deflare_frame(spec.lens_fov_b, spec.deflare_poly, float(scl[1]))
     gb, gg, gr = gain
     a_out, b_out = workdir / "lensA.mp4", workdir / "lensB.mp4"
 
@@ -191,8 +299,9 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
             nframes = math.ceil(duration * (_fps(source) or 29.97)) + 5
         except Exception:
             nframes = None
-    # [1:v] is consumed by TWO blends, so it must be split: a filter output
-    # can feed exactly ONE link.
+    # [1:v]/[2:v] are the per-lens deflare frames (different flare per
+    # lens: a shared frame fixes the average and overshoots the cleaner
+    # one). A filter output feeds exactly ONE link, so no split needed.
     # setpts rebase is REQUIRED, not cosmetic: -ss as an input option leaves
     # the original timestamps (~110 s) on the baked frames, while the ramp
     # mask (looped still) and the sendcmd file both live at 0. The framesync
@@ -209,8 +318,8 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
         lv = ("[b0][lvP]blend=all_mode=addition[bx];"
               "[bx][lvN]blend=all_mode=subtract[by];")
     fc = (
-        f"[0:v:0]format=gbrp[a0];[1:v]format=gbrp,split[df1][df2];"
-        + (f"[2:v]format=gbrp[lvP];[3:v]format=gbrp[lvN];"
+        f"[0:v:0]format=gbrp[a0];[1:v]format=gbrp[df1];[2:v]format=gbrp[df2];"
+        + (f"[3:v]format=gbrp[lvP];[4:v]format=gbrp[lvN];"
            if spec.leveling is not None else "") +
         f"[a0][df1]blend=all_mode=subtract,format=yuv444p,"
         f"setpts=PTS-STARTPTS[a];"
@@ -229,7 +338,8 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
     if duration is not None:
         args += ["-t", f"{duration:g}"]
     args += ["-i", str(source)]
-    args += ["-framerate", fps, "-loop", "1", "-i", str(db)]
+    args += ["-framerate", fps, "-loop", "1", "-i", str(dbA),
+             "-framerate", fps, "-loop", "1", "-i", str(dbB)]
     if spec.leveling is not None:
         # Looped stills pinned to the video rate (same churn trap as the
         # deflare input); setpts rebase downstream puts them on clock 0.
@@ -270,7 +380,7 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
     from steadycut.render.sphere_maps import blend_weight
     cv2 = __import__("cv2")
     w, h = sphere_size
-    g = gain or GAIN_DEFAULT
+    g = gain or measure_gain(source, t)  # stills match the bake
     gb, gg, gr = g
     with tempfile.TemporaryDirectory() as tmp:
         for trk in (0, 1):
@@ -284,14 +394,26 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
         # deflare (blue subtract) + gain, mirroring bake_lens_tracks.
         # The field stores excess in the BLUE channel: read color and take
         # [:,:,0], never grayscale (0.114*B rounds single-digit excess to 0).
-        db = cv2.imread(str(deflare_frame(spec.lens_fov_a,
-                                          spec.deflare_poly)))[:, :, 0]
-        if db.shape[:2] != a.shape[:2]:
-            db = cv2.resize(db, (a.shape[1], a.shape[0]))
+        # Per-lens frames AND per-lens application: B was never deflared in
+        # stills (A-only), which is exactly the B-side blue the seam shows.
+        scl = spec.deflare_scale
+        if scl is None:
+            scl = measure_deflare_scale(source, spec.deflare_poly, t)
+        if not isinstance(scl, (tuple, list)):
+            scl = (float(scl), float(scl))
+        dbA = cv2.imread(str(deflare_frame(
+            spec.lens_fov_a, spec.deflare_poly, float(scl[0]))))[:, :, 0]
+        dbB = cv2.imread(str(deflare_frame(
+            spec.lens_fov_b, spec.deflare_poly, float(scl[1]))))[:, :, 0]
+        if dbA.shape[:2] != a.shape[:2]:
+            dbA = cv2.resize(dbA, (a.shape[1], a.shape[0]))
+        if dbB.shape[:2] != a.shape[:2]:
+            dbB = cv2.resize(dbB, (a.shape[1], a.shape[0]))
         a = a.astype(np.float32)
-        a[:, :, 0] = np.clip(a[:, :, 0] - db.astype(np.float32), 0, 255)
+        a[:, :, 0] = np.clip(a[:, :, 0] - dbA.astype(np.float32), 0, 255)
         b = np.clip(b.astype(np.float32) *
                     np.array(g, np.float32), 0, 255)  # g is (B,G,R), BGR order
+        b[:, :, 0] = np.clip(b[:, :, 0] - dbB.astype(np.float32), 0, 255)
         # rim-blue: the fisheye circle edge renders +20..+160 excess blue
         # (measured snow-only), magnified by v360 into the seam bands.
         # Per-recording radial profile (same pattern as per-clip gain).
@@ -330,7 +452,17 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
         # PNG is 255 at sphere front (x=0) where B's yaw-180 equirect carries
         # the content; wgt is 1.0 on A's sphere hemisphere. Both conventions
         # are pinned in test_sphere_maps/test_stitch — touch neither blindly.
-        img = np.clip(eb * w3 + ea * (1 - w3), 0, 255).astype(np.uint8)
+        from steadycut.render.nearfield import (edge_flatten,
+                                                eroded_validity,
+                                                multiband_merge,
+                                                residual_level)
+        lumA = ea.mean(axis=2) if ea.ndim == 3 else ea
+        lumB = eb.mean(axis=2) if eb.ndim == 3 else eb
+        vA, vB = eroded_validity(lumA), eroded_validity(lumB)
+        ea, eb, _einfo = edge_flatten(ea, eb, wgt, vA, vB)
+        ea, eb, _linfo = residual_level(ea, eb, wgt, vA, vB)
+        img = multiband_merge(ea.astype(np.uint8), eb.astype(np.uint8),
+                              wgt, vA, vB)
         if spans or repair:
             from steadycut.render.nearfield import (auto_repair, load_spans,
                                                     repair_spans)

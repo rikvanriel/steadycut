@@ -312,7 +312,8 @@ def render(
             from steadycut.render.stitch import GAIN_DEFAULT
             gain = GAIN_DEFAULT
         else:
-            gain = measure_gain(str(source))
+            gain = measure_gain(str(source),
+                                t=start if start is not None else 5.0)
         gain_measured = stitch.gain is None
         sfg, mask_path = sphere_filtergraph(stitch, gain, sphere_size)
         if dry_run:
@@ -331,6 +332,7 @@ def render(
             "lens_fov": [stitch.lens_fov_a, stitch.lens_fov_b],
             "ramp_deg": stitch.ramp_deg,
             "deflare_poly": list(stitch.deflare_poly),
+            "deflare_scale": getattr(stitch, "deflare_scale", None),
             "optics_id": getattr(stitch, "optics_id", None),
             "seam": getattr(stitch, "seam", "meridian")}
     else:
