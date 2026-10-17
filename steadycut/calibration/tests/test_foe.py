@@ -14,7 +14,7 @@ def _field(foe_dir, n=400, outlier_frac=0.3, noise=0.02, seed=0,
     v[:, 2] *= 0.3
     v = v / np.linalg.norm(v, axis=1, keepdims=True)
     # great-circle tangent away from (or toward) the FOE
-    along = foe_dir[None, :] - v * (v @ foe_dir)[..., None]
+    along = v * (v @ foe_dir)[..., None] - foe_dir[None, :]
     along = along / (np.linalg.norm(along, axis=1, keepdims=True) + 1e-12)
     if converge:
         along = -along
@@ -71,8 +71,27 @@ def test_essential_recovers_known_motion():
     # + outliers: random re-matches
     p2[:40] = rng.normal(size=(40, 3))
     p2[:40] = p2[:40] / np.linalg.norm(p2[:40], axis=1, keepdims=True)
-    got, frac, Rest = foe.essential_travel(p1, p2)
+    got, frac, Rest, _ = foe.essential_travel(p1, p2)
     assert got is not None
     err = np.degrees(np.arccos(np.clip(abs(got @ t_true), -1, 1)))
     assert err < 3.0, (got, t_true)
     assert frac > 0.5, frac
+
+
+def test_essential_prefers_foe_over_foc():
+    """Weak-perspective converging field: divergence must flip the
+    cheirality answer to the true FOE (antipode of convergence)."""
+    rng = np.random.default_rng(9)
+    f = np.array([0.9, 0.15, -0.1])
+    f = f / np.linalg.norm(f)
+    n = 300
+    v = rng.normal(size=(n, 3)) + np.array([6.0, 0.0, 0.0])
+    v = v / np.linalg.norm(v, axis=1, keepdims=True)
+    # p2 = p1 moved TOWARD f (converging => true FOE is -f)
+    step = 0.05
+    w = v + step * (f[None, :] - v * (v @ f)[..., None])
+    w = w / np.linalg.norm(w, axis=1, keepdims=True)
+    got, frac, _, _ = foe.essential_travel(v, w)
+    assert got is not None
+    err = np.degrees(np.arccos(np.clip(got @ (-f), -1, 1)))
+    assert err < 5.0, got

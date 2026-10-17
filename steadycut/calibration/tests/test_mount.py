@@ -169,7 +169,22 @@ def test_travel_offset_recovers_mount():
                       (0.0, 30.0), (-90.0, 30.0)):
         t, w, f_body, q = _synthetic(mount_yaw_deg=my, slope_deg=slope,
                                      lean_gain=0.0)
-        vec, info = mount.travel_offset(t, w, f_body)
+        vec, info = mount.travel_offset(t, w, f_body, forward_axis=0)
+        assert vec is not None, (my, slope, info)
+        err = (np.degrees(np.arctan2(vec[1], vec[0])) + my + 180) % 360 - 180
+        assert abs(err) < 8.0, (my, slope, np.degrees(
+            np.arctan2(vec[1], vec[0])))
+
+
+def test_travel_offset_z_forward_axis():
+    """Production convention (z forward): the same motion relabeled to
+    (lateral, vertical, forward) must read +mount."""
+    for my, slope in ((90.0, 0.0), (0.0, 30.0), (-90.0, 30.0)):
+        t, w, f_body, q = _synthetic(mount_yaw_deg=my, slope_deg=slope,
+                                     lean_gain=0.0)
+        perm = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0],
+                         [1.0, 0.0, 0.0]])  # proper rotation, det +1
+        vec, info = mount.travel_offset(t, w @ perm.T, f_body @ perm.T)
         assert vec is not None, (my, slope, info)
         err = (np.degrees(np.arctan2(vec[1], vec[0])) + my + 180) % 360 - 180
         assert abs(err) < 8.0, (my, slope, np.degrees(

@@ -53,7 +53,8 @@ def essential_travel(p1, p2, seed=0):
     gyro sync/axis-map errors cannot bias the bearing (they only remove
     pairs from the consensus). Rays go through a virtual pinhole about
     the +x (lens) axis; output is a unit vector in lens-sphere coords.
-    Returns (unit vector | None, inlier fraction, R estimate).
+    Returns (unit vector | None, inlier fraction, R estimate, divergence
+    agreement with the returned sign).
     """
     cv2 = __import__("cv2")
     p1 = np.asarray(p1, float)
@@ -64,6 +65,9 @@ def essential_travel(p1, p2, seed=0):
         return None, 0.0, None
     q1 = np.stack([f1[:, 1] / f1[:, 0], f1[:, 2] / f1[:, 0]], -1)
     q2 = np.stack([f2[:, 1] / f2[:, 0], f2[:, 2] / f2[:, 0]], -1)
+    # Deterministic RANSAC: the flip decision below must be reproducible
+    # run to run (unstable flips across seeds = uninformative vote).
+    cv2.setRNGSeed(0)
     E, mask = cv2.findEssentialMat(q1, q2, focal=1.0, pp=(0.0, 0.0),
                                    method=cv2.RANSAC, threshold=0.002)
     if E is None or mask is None:
@@ -73,7 +77,36 @@ def essential_travel(p1, p2, seed=0):
     # E-frame (X_E, Y_E, Z_E) = (lens Y, lens Z, lens X): map back.
     t = tvec.ravel() / (np.linalg.norm(tvec.ravel()) + 1e-12)
     out = np.array([t[2], t[0], t[1]])
-    return out / np.linalg.norm(out), float(m2.sum()) / len(f1), R
+    out = out / np.linalg.norm(out)
+    # Cheirality picks wrong under weak perspective (distant scene +
+    # flow noise): break the FOE/FOC tie by DIVERGENCE, which is directly
+    # observed. Flow must point AWAY from the FOE along each inlier's
+    # great circle; the FOC impostor has it backwards.
+    sub = np.zeros(len(f1), bool)
+    sub[m2.ravel().astype(bool)] = True
+    full = np.zeros(len(p1), bool)
+    full[np.where(front)[0][sub]] = True
+    full = full & (np.abs(p1 @ out) < 0.99)
+    agree = float("nan")
+    if full.sum() >= 3:
+        pp = p1[full]
+        tt = (p2[full] - pp)
+        tt = tt / (np.linalg.norm(tt, axis=1, keepdims=True) + 1e-12)
+        away = np.einsum("ij,ij->i", tt,
+                         out[None, :] - pp * (pp @ out)[..., None])
+        # div = divergence fraction at the cheirality answer. Tri-state:
+        # div near 0 = the answer is the FOC, flip to the FOE; div near 1
+        # = the answer is the FOE, keep; middle = rotation swirl or noise,
+        # REFUSE (cheirality is untrustworthy there, not a silent keep).
+        div = 1.0 - float((away > 0).mean())
+        if div < 0.25:
+            out = -out
+            agree = 1.0 - div
+        elif div <= 0.65:
+            return None, float(m2.sum()) / len(f1), R, div
+        else:
+            agree = div
+    return out, float(m2.sum()) / len(f1), R, agree
 
 
 def rotation_agreement(R_ess, R_gyro, tol_deg=3.0):
@@ -121,6 +154,6 @@ def foe_ransac(p, t, iters=RANSAC_ITERS, tol=RANSAC_TOL_RAD, seed=0):
     away = np.einsum("ij,ij->i", t[best_in],
                      foe[None, :] - p[best_in] *
                      (p[best_in] @ foe)[..., None])
-    if float(np.median(away)) < 0:
+    if float(np.median(away)) > 0:
         foe = -foe
     return foe, float(best_in.mean())

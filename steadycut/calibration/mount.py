@@ -193,10 +193,13 @@ def level_start(t, accel_body, gyro_body=None):
     return np.concatenate([[np.cos(ang / 2)], np.sin(ang / 2) * axis])
 
 
-def travel_offset(t, gyro_body, accel_body):
+def travel_offset(t, gyro_body, accel_body, forward_axis=2):
     """Mount offset direction in BODY coordinates from turn segments.
 
     gyro_body: (N,3) deg/s about body x,y,z. accel_body: (N,3) g.
+    forward_axis: which body axis is forward (2 = roll axis = z, the
+    production convention: roll is rotation about the forward axis,
+    pitch/x lateral, yaw/y vertical). Pass 0 for x-forward fixtures.
     Each turn segment is integrated locally from zero (gyro-only; drift
     over seconds stays in budget), its weighted-mean horizontal-force
     vector transported into the body-at-mid frame, and per-direction
@@ -225,6 +228,7 @@ def travel_offset(t, gyro_body, accel_body):
     den_r = 0.0
     n_l = n_r = 0
     dwell_l = dwell_r = 0.0
+    rows = []  # per-segment votes: (t_mid, sign, vx, vy, weight)
     for i0, i1, s in segs:
         # vertical is anchored in the pre-turn glide (up to 3 s of
         # below-threshold samples): the turn's own Delta-v would tilt a
@@ -260,10 +264,16 @@ def travel_offset(t, gyro_body, accel_body):
         w = 1.0 / np.maximum(np.abs(rr), np.radians(10.0))
         # offset in the segment's horizontal plane, yaw-only: lean must not
         # contaminate the projection, so build forward/right vectorially
-        # (no Euler conventions): body-x into local, horizontalized.
+        # (no Euler conventions). Forward is the body ROLL axis (z):
+        # roll is rotation about the forward axis, while pitch (x) is
+        # lateral and yaw (y) is vertical in integrate's body frame.
+        # (Body-x here read ~90 deg off the Mar05 FOE anchor; z lands on
+        # it.) Body-z into local, horizontalized:
         qmid = q[j0 + (len(st) - j0) // 2]
         Rm = _quat_to_mat(qmid)
-        bx = Rm @ np.array([1.0, 0.0, 0.0])
+        axes = (np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]),
+                np.array([0.0, 0.0, 1.0]))
+        bx = Rm @ axes[forward_axis]
         fwd = bx - (bx @ gvw) * gvw
         fwd = fwd / (np.linalg.norm(fwd) + 1e-12)
         right = np.cross(gvw, fwd)
@@ -272,14 +282,18 @@ def travel_offset(t, gyro_body, accel_body):
         # segment's own reference is identically ~zero; the geometry lives
         # in the heading dependence across samples).
         V = np.stack([h @ fwd, h @ right], axis=1)
+        Vsum = (V * w[:, None]).sum(axis=0)
+        Wsum = float(w.sum())
+        rows.append((float(st[j0 + (len(st) - j0) // 2]), int(s),
+                     float(Vsum[0] / Wsum), float(Vsum[1] / Wsum), Wsum))
         if s > 0:
-            num_l += (V * w[:, None]).sum(axis=0)
-            den_l += w.sum()
+            num_l += Vsum
+            den_l += Wsum
             n_l += 1
             dwell_l += t[i1 - 1] - t[i0]
         else:
-            num_r += (V * w[:, None]).sum(axis=0)
-            den_r += w.sum()
+            num_r += Vsum
+            den_r += Wsum
             n_r += 1
             dwell_r += t[i1 - 1] - t[i0]
     if den_l == 0 or den_r == 0:
@@ -296,7 +310,7 @@ def travel_offset(t, gyro_body, accel_body):
     tv = np.array([c[1], -c[0]]) / n
     info = {"n_l": n_l, "n_r": n_r, "dwell_l": dwell_l, "dwell_r": dwell_r,
             "alternating_g": n, "mean_l": mean_l.tolist(),
-            "mean_r": mean_r.tolist()}
+            "mean_r": mean_r.tolist(), "rows": rows}
     return tv, info
 
 
