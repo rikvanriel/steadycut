@@ -498,10 +498,14 @@ def main(argv=None) -> int:
             imu = _rt(str(spec.source), profile=spec.profile)
             am = (spec.profile.axis_map
                   if spec.profile is not None else None)
-            m = ((imu.time_s >= spec.start) &
-                 (imu.time_s < spec.start + spec.duration))
+            # WIDE context for the attitude (q0 needs a steady second);
+            # sel scopes duty/refusal to the delivery window
+            m = ((imu.time_s >= spec.start - 60.0) &
+                 (imu.time_s < spec.start + spec.duration + 60.0))
+            w = ((imu.time_s[m] >= spec.start) &
+                 (imu.time_s[m] < spec.start + spec.duration))
             sh, li = _vl.level_shifts(imu.time_s[m], imu.gyro[m],
-                                      imu.accel[m], am)
+                                      imu.accel[m], am, sel=w)
             if "refused" in li:
                 cert["level_vqf"] = {k: round(v, 3) for k, v in li.items()
                                      if isinstance(v, (int, float))}
