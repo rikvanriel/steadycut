@@ -140,6 +140,12 @@ def bridge_spans(t, gyr, acc, spans, R, axis_map, dt):
     n_b = n_u = 0
     n = len(t)
     for a, b in spans:
+        # cap the carry: gyro coning/drift through violent whip bounds
+        # honest bridging to ~tens of seconds; longer spans keep the
+        # hold (counted unbridged, may trip refusal).
+        if (b + 1 - a) * dt > 20.0:
+            n_u += 1
+            continue
         # settled = gate-calm AND directly slow: the gate's entry delay
         # leaves the first second calm while already spinning, so an
         # anchor there would carry a corrupt reference (test b pin).
@@ -263,7 +269,7 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
                                          (g_col, g_sign)]])
     yaw_w = _wb[:, 2]
     back = int(round(2.5 / dt))
-    turn_m = _O.turn_state(t, yaw_w, smooth_s=1.0)
+    turn_m = _O.turn_state(t, yaw_w, smooth_s=2.0)
     # dilate each contiguous span backward (entry coverage), offline luxury
     idx = np.flatnonzero(turn_m)
     if len(idx):
@@ -338,11 +344,14 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
             "raw_p95": float(np.percentile(np.abs(raw[lo:hi]), 95))
             if hi > lo else 0.0,
             "rest_frac": float(np.mean(out["restDetected"]))}
-    if turn_frac > 0.5:
-        # open-loop most of the run (no steady second anywhere):
+    if turn_frac > 0.5 and n_u > 0:
+        # open-loop most of the run with spans no anchor reaches:
         # refuse rather than pump. Caller falls back to static.
-        info["refused"] = ("turn_frac %.2f > 0.50: no gravity reference "
-                           "in this window" % turn_frac)
+        # Fully-bridged windows apply: each span carries its own
+        # anchors, so drift does not chain across spans.
+        info["refused"] = (f"turn_frac {turn_frac:.2f} > 0.50 with "
+                           f"{n_u} unbridged spans: no gravity reference "
+                           "in this window")
     if abs(float(np.median(_roll))) > 90.0:
         info["refused"] = ("roll median %.0f deg: inverted attitude" %
                            float(np.median(_roll)))
