@@ -70,7 +70,75 @@ def test_coordinated_turn_no_bank():
     assert abs(float(np.median(naive))) > 20.0, float(np.median(naive))
 
 
-def test_resample_clock():
+def test_bridge_spin_about_vertical():
+    # (d) rigid spin about WORLD vertical, fixed 15-deg body tilt, calm
+    # both sides: the roll-slot shift swings through the turn while the
+    # world reference is fixed. The bridge must track it (<4 deg);
+    # the old constant hold fails by the swing amplitude.
+    dt = 0.01
+    calm_s, turn_s = 3.0, 12.0
+    n_c, n_t = int(calm_s / dt), int(turn_s / dt)
+    n = 2 * n_c + n_t
+    t = np.arange(n) * dt
+    yaw_rate = 10.0  # deg/s about world vertical through the turn
+    psi = np.zeros(n)
+    psi[n_c:n_c + n_t] = np.radians(yaw_rate) * np.arange(n_t) * dt
+    tilt = np.radians(15.0)
+    Rx = np.array([[1, 0, 0], [0, np.cos(tilt), -np.sin(tilt)],
+                   [0, np.sin(tilt), np.cos(tilt)]])
+    up0 = Rx @ np.array([0.0, 0.0, 1.0])
+    # spin psi about world z: the tilted up-vector rotates by -psi in body
+    up_body = np.array([[up0[0] * np.cos(p) + up0[1] * np.sin(p),
+                         -up0[0] * np.sin(p) + up0[1] * np.cos(p), up0[2]]
+                        for p in psi])
+    g = 9.81
+    # up-positive convention (pipeline-wide: rest raw[1] = +g); raw via
+    # the code's post-fix frame body = (-raw[2], -raw[0], +raw[1])
+    acc_body = g * up_body
+    # raw columns via the X4 signed permutation (Map signs pre-det-fix;
+    # level_shifts derives the handedness itself)
+    gyro = np.zeros((n, 3))
+    accel = np.zeros((n, 3))
+    w_body = np.degrees(np.radians(yaw_rate)) * up_body
+    w_body[:n_c] = 0.0
+    w_body[n_c + n_t:] = 0.0
+    # raw columns via the code's post-fix frame:
+    # body = (-raw[2], -raw[0], +raw[1])
+    gyro[:, 2] = -w_body[:, 0]
+    gyro[:, 0] = -w_body[:, 1]
+    gyro[:, 1] = +w_body[:, 2]
+    accel[:, 2] = -acc_body[:, 0]
+    accel[:, 0] = -acc_body[:, 1]
+    accel[:, 1] = +acc_body[:, 2]
+    s, info = VL.level_shifts(t, gyro, accel, Map())
+    true = np.array([shift_from_gravity(accel[i], Map())
+                     for i in range(n)])
+    mid = slice(n_c, n_c + n_t)
+    err = float(np.median(np.abs(s[mid] - true[mid])))
+    assert info["n_bridged"] >= 1, info
+    assert err < 4.0, (err, info)
+    # fail-old: the constant hold misses the swing
+    hold_err = float(np.median(np.abs(
+        np.median(s[:n_c]) - true[mid])))
+    assert hold_err > 2 * err, (hold_err, err)
+
+
+def test_up_convention_matches_static():
+    # (e) z-up pin: on calm tilted data the VQF-derived body-up must
+    # agree with the static accel direction (validates _body_up_from_R
+    # including the det-derived handedness on the X4 map).
+    dt, n = 0.01, 400
+    t = np.arange(n) * dt
+    tilt = np.radians(20.0)
+    g = 9.81
+    gyro = np.zeros((n, 3))
+    accel = np.column_stack([np.zeros(n),
+                             np.full(n, g * np.cos(tilt)),
+                             np.full(n, g * np.sin(tilt))])
+    s, _ = VL.level_shifts(t, gyro, accel, Map())
+    assert abs(float(np.median(s)) - float(shift_from_gravity(
+        np.array([0.0, g * np.cos(tilt), g * np.sin(tilt)]),
+        Map()))) < 1.0
     # B1: path times are clip-relative; interpolating them against
     # absolute IMU times parks every point before xp[0] (one constant
     # from before the window). resample_shifts subtracts start.

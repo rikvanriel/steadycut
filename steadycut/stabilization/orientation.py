@@ -340,13 +340,26 @@ def level_start(t, accel_body, gyro_body=None):
 
 
 def turn_state(t, rate, enter_s=2.5, exit_s=1.0, enter_dps=6.0,
-               exit_dps=3.0, pad_s=1.0):
+               exit_dps=3.0, pad_s=1.0, smooth_s=0.0):
     """Sustained-turn mask with hysteresis: enter after enter_s above
     enter_dps, exit after exit_s below exit_dps, dilated by pad_s so the
     fast leash covers entries/exits. Brief glances (< enter_s) never
-    enter; the forward-backward filter smooths the edges that remain."""
+    enter; the forward-backward filter smooths the edges that remain.
+
+    smooth_s>0 lowpasses the SIGNED rate first: oscillatory whip (zero
+    crossings every ~1 s, 75% of samples above threshold) never sustains
+    the raw gate, while sustained legs survive the smooth. Default 0
+    keeps existing callers unchanged.
+    """
     t = np.asarray(t, float)
-    r = np.abs(np.asarray(rate, float))
+    r_in = np.asarray(rate, float)
+    if smooth_s > 0:
+        n = len(t)
+        dt = float(np.median(np.diff(t))) if n > 1 else 0.01
+        k = max(1, int(round(smooth_s / dt)))
+        ker = np.ones(k) / k
+        r_in = np.convolve(r_in, ker, mode="same")
+    r = np.abs(r_in)
     n = len(t)
     dt = float(np.median(np.diff(t))) if n > 1 else 0.01
     ne, nx, npad = (max(1, int(round(enter_s / dt))),

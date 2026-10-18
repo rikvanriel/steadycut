@@ -34,6 +34,147 @@ def quat_to_mat(q):
     ], axis=-1).reshape(q.shape[:-1] + (3, 3))
 
 
+def _handed_signs(axis_map):
+    """Signed (col, sign) triples with the det-derived handedness fix.
+
+    Shared by level_shifts and bridge_spans: the X4 map frame is
+    left-handed (det -1, signs serve the flipped sphere); negate Z iff
+    the signed frame has det -1 so VQF gets a right-handed z-up frame.
+    """
+    p_col, p_sign = axis_map.pitch
+    r_col, r_sign = axis_map.roll
+    g_col, g_sign = axis_map.yaw
+    _perm = [p_col, r_col, g_col]
+    _inv = sum(1 for i in range(3) for j in range(i + 1, 3)
+               if _perm[i] > _perm[j])
+    if p_sign * r_sign * g_sign * (-1) ** _inv < 0:
+        g_sign = -g_sign
+    return (p_col, p_sign), (r_col, r_sign), (g_col, g_sign)
+
+
+def _body_up_from_R(R):
+    """Unit up-vector in body frame from a body->world matrix.
+
+    VQF's world is z-up; the body-frame components of world +z are the
+    third ROW of R (R.T @ z). Pinned against static accel below.
+    """
+    u = np.asarray(R)[2, :]
+    n = float(np.linalg.norm(u))
+    return u / n if n > 1e-12 else np.array([0.0, 0.0, 1.0])
+
+
+def _carry_up(u0, w_rad, dt, sign):
+    """Carry a body-frame up-vector through gyro samples.
+
+    sign=+1 integrates forward (u[k+1] = rot(-w*dt) u[k]: the body
+    rotates by +w*dt under a fixed world vector); sign=-1 backward.
+    """
+    from steadycut.stabilization import orientation as O
+    u = np.array(u0, float)
+    out = np.zeros((len(w_rad), 3))
+    for k in range(len(w_rad)):
+        if (sign > 0 and k == 0) or (sign < 0 and k == len(w_rad) - 1):
+            out[k] = u
+            continue
+        j = k - 1 if sign > 0 else k
+        dq = O.from_rotvec((-sign * w_rad[j] * dt[j])[None, :])[0]
+        qv = np.concatenate([[0.0], u])
+        u = O._mul(O._mul(dq, qv), O._conj(dq))[1:]
+        u = u / max(float(np.linalg.norm(u)), 1e-12)
+        out[k] = u
+    if sign < 0:
+        # built backward from the post anchor: reverse to time order
+        out = out[::-1]
+    return out
+
+
+def _best_anchor(score, edge, side, dt, n):
+    """Lowest-score 1 s window within 5 s of a span edge.
+
+    The adjacent second is often transitional (turn exit/entry); the
+    anchor should be the second VQF actually settled in. Returns
+    (center_index, score) or (None, inf).
+    """
+    wlen = int(round(1.0 / dt))
+    span = int(round(5.0 / dt))
+    if side < 0:
+        lo, hi = max(0, edge - span), edge
+    else:
+        lo, hi = edge, min(n, edge + span)
+    best, bq = None, float("inf")
+    for s in range(lo, max(lo, hi - wlen)):
+        q = float(score[s:s + wlen].mean())
+        if q < bq:
+            best, bq = s + wlen // 2, q
+    return best, bq
+
+
+def bridge_spans(t, gyr, acc, spans, R, axis_map, dt):
+    """Gyro-carry the world-fixed up reference through frozen spans.
+    carry; else post: backward carry), integrate body rate through,
+    and blend carried vs fresh VQF over 2 s on re-anchor. Returns
+    (synth_accel or None per span, n_bridged, n_unbridged).
+    Unbridgeable spans (neither side settled) keep the old constant
+    hold — no new failure mode.
+    """
+    (p_col, p_sign), (r_col, r_sign), (g_col,
+                                       g_sign) = _handed_signs(axis_map)
+    body_of = [(p_col, p_sign), (r_col, r_sign), (g_col, g_sign)]
+    w = np.radians(np.asarray(gyr, float))  # raw columns
+    # body-frame rate in the VQF-built frame order
+    wb = np.column_stack([s * w[:, c] for c, s in body_of])
+    yaw_w = wb[:, 2]
+    # per-sample VQF innovation: angle between VQF body-up and measured
+    # accel (up-positive frame). Low = VQF converged = safe anchor, even
+    # under slow rotation that a stillness test would veto. Anchoring on
+    # stillness fails wherever the head never sits still (measured: no
+    # 1 s window under 6 deg/s anywhere near the Jan26 turn).
+    acc_vqf = np.column_stack([s * np.asarray(acc, float)[:, c]
+                               for c, s in body_of])
+    an = np.linalg.norm(acc_vqf, axis=1, keepdims=True)
+    up_v = np.asarray(R)[:, 2, :]
+    innov = np.degrees(np.arccos(np.clip(
+        (up_v * (acc_vqf / np.maximum(an, 1e-12))).sum(axis=1),
+        -1.0, 1.0)))
+    synth = {}
+    n_b = n_u = 0
+    n = len(t)
+    for a, b in spans:
+        # settled = gate-calm AND directly slow: the gate's entry delay
+        # leaves the first second calm while already spinning, so an
+        # anchor there would carry a corrupt reference (test b pin).
+        # Search the lowest-innovation nearby second (adjacent is
+        # transitional). Accept under 10 deg mean disagreement.
+        ai, aq = _best_anchor(innov, a, -1, dt, n)
+        bi, bq = _best_anchor(innov, b + 1, +1, dt, n)
+        pre_ok = ai is not None and aq < 10.0
+        post_ok = bi is not None and bq < 10.0
+        if pre_ok:
+            assert ai is not None
+            u0 = _body_up_from_R(R[ai])
+            seg = np.arange(ai, b + 1)
+            U = _carry_up(u0, wb[seg], np.gradient(t[seg]), +1)
+            U = U[a - ai:]
+        elif post_ok:
+            assert bi is not None
+            u0 = _body_up_from_R(R[bi])
+            seg = np.arange(a, bi + 1)
+            U = _carry_up(u0, wb[seg], np.gradient(t[seg]), -1)
+            U = U[:b + 1 - a]
+        else:
+            n_u += 1
+            continue
+        # synth raw-column accel from carried up, in the pipeline's
+        # up-positive convention (same linear map as gvec above:
+        # gvec[:, col] = up_i / sign; scale is ratio-free in atan2)
+        G = np.zeros((b + 1 - a, 3))
+        for i, (c, s) in enumerate(body_of):
+            G[:, c] = s * (9.81 * U[:, i])
+        synth[(a, b)] = G
+        n_b += 1
+    return synth, n_b, n_u
+
+
 def resample_shifts(path_t, imu_t, shifts, start):
     """Shifts onto ControlPoint timestamps. path_t is CLIP-RELATIVE
     (imu_time_s - start + sync offset); imu_t is absolute. Mixing the
@@ -67,16 +208,11 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     p_col, p_sign = axis_map.pitch
     r_col, r_sign = axis_map.roll
     g_col, g_sign = axis_map.yaw  # gravity lives in the vendor yaw column
-    # Handedness fix (review R2): the map frame (signed permutation of
-    # raw columns) is left-handed for the X4 map (det -1: the signs serve
-    # the 180-deg-flipped sphere). VQF needs a proper right-handed frame
-    # with Z up, so negate Z iff the signed frame has det -1. Per-body
-    # safe: a det +1 map keeps its signs; |roll|>90 still refuses below.
-    _perm = [p_col, r_col, g_col]
-    _inv = sum(1 for i in range(3) for j in range(i + 1, 3)
-               if _perm[i] > _perm[j])
-    if p_sign * r_sign * g_sign * (-1) ** _inv < 0:
-        g_sign = -g_sign
+    # Handedness fix (review R2): shared helper below derives it; see
+    # _handed_signs. Per-body safe: a det +1 map keeps its signs;
+    # |roll|>90 still refuses below.
+    (p_col, p_sign), (r_col, r_sign), (g_col,
+                                       g_sign) = _handed_signs(axis_map)
 
     def _build(ps, rs, gs):
         g = np.radians(np.column_stack((
@@ -106,10 +242,14 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     raw = np.array([shift_from_gravity(gvec[i], axis_map)
                     for i in range(len(t))])
     w, x, y, z = np.asarray(out["quat6D"], float).T
-    yaw_w = np.degrees(np.gradient(np.unwrap(np.arctan2(
-        2 * (w * z + x * y), 1 - 2 * (y * y + z * z))), dt))
-    # freeze gate: SUSTAINED world yaw rate (turn_state: 2.5 s entry, so
+    # freeze gate: SUSTAINED body yaw rate (turn_state: 2.5 s entry, so
     # spikes and glances never enter), backward-dilated for the entry.
+    # Keyed on BODY-column yaw, not VQF yaw: under lateral-g VQF's own
+    # attitude absorbs rotation into tilt error and its yaw never
+    # sustains (measured: body legs +-20 deg/s for 10 s each read mush
+    # in VQF yaw). Mount roll hides part of world yaw from the helmet
+    # column (~40% visible), but real turns still clear 6 deg/s by far;
+    # glance rejection via the 2.5 s sustain is unchanged.
     # No gyro integration anywhere: coning and bias make a predicted-up
     # innov diverge tens of degrees on real data (measured), while yaw
     # RATE is gyro-dominated and drift-free. Documented leaks (review R2):
@@ -118,8 +258,12 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     # leaks ~8.6 of ~11.5 deg — wide GS turns live there; gate on
     # v*omega when speed exists, else accept).
     import steadycut.stabilization.orientation as _O
+    _wb = np.column_stack([s * gyro[:, c]
+                           for c, s in [(p_col, p_sign), (r_col, r_sign),
+                                         (g_col, g_sign)]])
+    yaw_w = _wb[:, 2]
     back = int(round(2.5 / dt))
-    turn_m = _O.turn_state(t, yaw_w)
+    turn_m = _O.turn_state(t, yaw_w, smooth_s=1.0)
     # dilate each contiguous span backward (entry coverage), offline luxury
     idx = np.flatnonzero(turn_m)
     if len(idx):
@@ -142,9 +286,25 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
             j += 1
         spans.append((i, j))
         i = j + 1
+    # anchor-bridge: gyro-carry the world-fixed reference through frozen
+    # spans settled on at least one side; unbridgeable spans keep the
+    # constant hold (no new failure mode)
+    bridged, n_b, n_u = bridge_spans(t, gyro, accel, spans, R,
+                                     axis_map, dt)
     for a, b in spans:
-        # hold the MEDIAN over the preceding ~1 s (a single unsmoothed
-        # sample can sit on vibration; review R2)
+        G = bridged.get((a, b))
+        if G is not None:
+            # gyro-carried world reference through the turn: per-sample
+            # shifts from the carried up-vector via the settled formula
+            for k, gv in enumerate(G):
+                shifts[a + k] = shift_from_gravity(gv, axis_map)
+            m = min(n - b - 1, int(round(2.0 / dt)))
+            if m > 1 and b + 1 < n:
+                wgt = 0.5 - 0.5 * np.cos(np.pi * np.arange(m) / m)
+                shifts[b + 1:b + 1 + m] = ((1 - wgt) * shifts[b]
+                                           + wgt * raw[b + 1:b + 1 + m])
+            continue
+        # unbridgeable (no settled anchor either side): constant hold
         lo = max(0, a - int(round(1.0 / dt)))
         pre = raw[lo:a] if a > lo else np.array([])
         hold = float(np.median(pre)) if len(pre) else (
@@ -171,6 +331,8 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     turn_frac = float(frozen_n / scope)
     info = {"turn_frac": turn_frac,
             "n_turns": len(spans),
+            "n_bridged": n_b,
+            "n_unbridged": n_u,
             "shift_p95": float(np.percentile(np.abs(shifts[lo:hi]), 95))
             if hi > lo else 0.0,
             "raw_p95": float(np.percentile(np.abs(raw[lo:hi]), 95))
