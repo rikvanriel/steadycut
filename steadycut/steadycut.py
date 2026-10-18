@@ -517,14 +517,15 @@ def main(argv=None) -> int:
                 cert["level_vqf"]["reason"] = li["refused"]
                 print(f"CLI| vqf level REFUSED ({li['refused']})")
             else:
-                # resample per-sample shifts onto the path timestamps
                 import numpy as _np
                 pt = _np.array([p.t for p in pts])
-                dl = _np.interp(pt, imu.time_s[m], sh,
-                                left=sh[0], right=sh[-1])
+                dl = _vl.resample_shifts(pt, imu.time_s[m], sh,
+                                         spec.start)
                 pts = [dataclasses.replace(p, roll=float(p.roll) + float(d))
                        for p, d in zip(pts, dl)]
                 cert["level_vqf"] = {k: round(v, 3) for k, v in li.items()}
+                cert["level_vqf"]["applied"] = True
+                cert["level_vqf"]["static_skipped"] = True
                 print(f"CLI| vqf level p95 {li['shift_p95']:+.1f}deg "
                       f"turn_frac {li['turn_frac']:.2f}")
         if a.pitch_aim is not None:
@@ -551,8 +552,16 @@ def main(argv=None) -> int:
                    for p in pts]
             cert["yaw_bias_track"] = a.yaw_bias_track
             print(f"CLI| yaw bias track {len(anchors)} anchors")
+        # B2 fix: --level-vqf REPLACES the static shift (its shifts are
+        # absolute, same formula). On refusal the static path applies as
+        # the safe default; the cert records which leveller ran.
+        _vqf_ok = bool(a.level_vqf and "level_vqf" in cert
+                       and cert["level_vqf"].get("applied"))
         if a.no_level:
             cert["level"] = {"applied": False, "reason": "flag"}
+        elif a.level_vqf and _vqf_ok:
+            cert["level"] = {"applied": False,
+                             "reason": "replaced by level_vqf"}
         else:
             from steadycut.ingest.telemetry import read_telemetry
             from steadycut.stabilization.level import apply_shift, measure_shift

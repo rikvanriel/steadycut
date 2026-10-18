@@ -11,11 +11,8 @@ rest, as on footage). Identity maps hide the frame logic under test.
 (c) static 30 deg tilt about raw-x: shifts sit at the formula value
     (tilt is tilt; head-look is not special).
 """
-import sys
-
 import numpy as np
 
-sys.path.insert(0, "/source/upstream/steadycut")
 from steadycut.stabilization import vqf_level as VL
 from steadycut.stabilization.level import shift_from_gravity
 
@@ -64,8 +61,27 @@ def test_coordinated_turn_no_bank():
     naive = np.array([shift_from_gravity(accel[i], Map())
                       for i in range(n)])
     assert float(np.percentile(np.abs(s - np.median(s)), 95)) < 10.0, info
+    # the gate did work (not VQF alone): it fired, and the ungated raw
+    # spread exceeds the held output (review R2)
+    assert info["n_turns"] >= 1, info
+    assert info["raw_p95"] > float(
+        np.percentile(np.abs(s - np.median(s)), 95)), info
     # fail-old: the same formula on raw accel sits banked ~45 deg
     assert abs(float(np.median(naive))) > 20.0, float(np.median(naive))
+
+
+def test_resample_clock():
+    # B1: path times are clip-relative; interpolating them against
+    # absolute IMU times parks every point before xp[0] (one constant
+    # from before the window). resample_shifts subtracts start.
+    imu_t = np.arange(0.0, 20.0, 0.01) + 240.0
+    sh = np.sin(imu_t)  # varying: a constant output proves the bug
+    path_t = np.arange(-15.0, 30.0, 1.0)  # clip-relative, start=240
+    got = VL.resample_shifts(path_t, imu_t, sh, 240.0)
+    assert float(np.std(got)) > 0.1, "constant: clock mismatch"
+    # and it tracks the right values, not just varies
+    want = np.interp(path_t, imu_t - 240.0, sh)
+    assert np.allclose(got, want)
 
 
 def test_static_tilt_carried():

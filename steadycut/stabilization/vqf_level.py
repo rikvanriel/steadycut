@@ -34,6 +34,19 @@ def quat_to_mat(q):
     ], axis=-1).reshape(q.shape[:-1] + (3, 3))
 
 
+def resample_shifts(path_t, imu_t, shifts, start):
+    """Shifts onto ControlPoint timestamps. path_t is CLIP-RELATIVE
+    (imu_time_s - start + sync offset); imu_t is absolute. Mixing the
+    clocks parks every point left of xp[0] and applies one constant
+    from before the window (review R2 B1) — subtract start here.
+    """
+    import numpy as _np
+    pt = _np.asarray(path_t, float)
+    xp = _np.asarray(imu_t, float) - float(start)
+    return _np.interp(pt, xp, _np.asarray(shifts, float),
+                      left=shifts[0], right=shifts[-1])
+
+
 def level_shifts(t, gyro, accel, axis_map, sel=None):
     """Per-sample roll-slot shifts (deg) from VQF-predicted body gravity.
 
@@ -54,6 +67,16 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     p_col, p_sign = axis_map.pitch
     r_col, r_sign = axis_map.roll
     g_col, g_sign = axis_map.yaw  # gravity lives in the vendor yaw column
+    # Handedness fix (review R2): the map frame (signed permutation of
+    # raw columns) is left-handed for the X4 map (det -1: the signs serve
+    # the 180-deg-flipped sphere). VQF needs a proper right-handed frame
+    # with Z up, so negate Z iff the signed frame has det -1. Per-body
+    # safe: a det +1 map keeps its signs; |roll|>90 still refuses below.
+    _perm = [p_col, r_col, g_col]
+    _inv = sum(1 for i in range(3) for j in range(i + 1, 3)
+               if _perm[i] > _perm[j])
+    if p_sign * r_sign * g_sign * (-1) ** _inv < 0:
+        g_sign = -g_sign
 
     def _build(ps, rs, gs):
         g = np.radians(np.column_stack((
@@ -65,36 +88,7 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
         return g, a
 
     gyr, acc = _build(p_sign, r_sign, g_sign)
-    # Frame fix (measured on MTB + ski, two bodies, same sensor): the
-    # map's Z sign is renderer-frame (sphere flipped 180 deg) — VQF with
-    # map signs converges with body-Z pointing DOWN (up_z -0.96) on every
-    # window. Negate Z always, then break the remaining yaw-180 tie
-    # (X vs Y negation) by pitch agreement with the label-pinned online
-    # estimator. Both branches describe the same tilt; the pin picks the
-    # representation, and |roll|>90 refuses if neither is upright.
-    from steadycut.stabilization import attitude_vqf as _AV
-    try:
-        pin = float(np.median(_AV.attitude(
-            np.degrees(gyr), acc, dt).pitch))
-    except Exception:
-        pin = None
-    g_sign = -g_sign
-    gyr, acc = _build(p_sign, r_sign, g_sign)
     out = vqf.offlineVQF(gyr, acc, None, dt)
-
-    def _pitchmed(o):
-        q = np.asarray(o["quat6D"], float)
-        w, x, y, z = q.T
-        return float(np.median(-np.degrees(np.arcsin(
-            np.clip(2 * (w * y - z * x), -1, 1)))))
-    if pin is not None and (_pitchmed(out) > 0) != (pin > 0):
-        # other yaw branch: negate X&Y (180 deg about Z, proper); Z stays
-        # negated (map Z is renderer-frame — re-flipping it restores the
-        # inverted attitude and shifts read +-150 deg)
-        gyr, acc = _build(-p_sign, -r_sign, g_sign)
-        out = vqf.offlineVQF(gyr, acc, None, dt)
-        p_sign, r_sign = -p_sign, -r_sign
-    # (g_sign already negated above unconditionally: map Z is renderer-frame)
     R = quat_to_mat(np.asarray(out["quat6D"], float))  # body -> world
     # absurdity guard: a bike/ski camera never rides upside-down; if the
     # winning branch still reads |roll| > 90 deg the frame is inverted
@@ -118,10 +112,11 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     # spikes and glances never enter), backward-dilated for the entry.
     # No gyro integration anywhere: coning and bias make a predicted-up
     # innov diverge tens of degrees on real data (measured), while yaw
-    # RATE is gyro-dominated and drift-free. Documented leak: a carve
-    # with counter-rotated head reads straight here (sensor rate ~0)
-    # while lateral persists — rare, accepted; VQF lowpass covers the
-    # alternating case and the freeze covers the sustained one.
+    # RATE is gyro-dominated and drift-free. Documented leaks (review R2):
+    # a carve with counter-rotated head reads straight (accepted, rare);
+    # sub-threshold rate with real lateral leaks (5.5 dps + 2.0 m/s2
+    # leaks ~8.6 of ~11.5 deg — wide GS turns live there; gate on
+    # v*omega when speed exists, else accept).
     import steadycut.stabilization.orientation as _O
     back = int(round(2.5 / dt))
     turn_m = _O.turn_state(t, yaw_w)
@@ -148,8 +143,12 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
         spans.append((i, j))
         i = j + 1
     for a, b in spans:
-        hold = raw[a - 1] if a > 0 else (raw[b + 1] if b + 1 < n
-                                         else float(np.median(raw)))
+        # hold the MEDIAN over the preceding ~1 s (a single unsmoothed
+        # sample can sit on vibration; review R2)
+        lo = max(0, a - int(round(1.0 / dt)))
+        pre = raw[lo:a] if a > lo else np.array([])
+        hold = float(np.median(pre)) if len(pre) else (
+            raw[b + 1] if b + 1 < n else float(np.median(raw)))
         shifts[a:b + 1] = hold
         m = min(n - b - 1, int(round(2.0 / dt)))
         if m > 1 and b + 1 < n:
@@ -173,6 +172,8 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     info = {"turn_frac": turn_frac,
             "n_turns": len(spans),
             "shift_p95": float(np.percentile(np.abs(shifts[lo:hi]), 95))
+            if hi > lo else 0.0,
+            "raw_p95": float(np.percentile(np.abs(raw[lo:hi]), 95))
             if hi > lo else 0.0,
             "rest_frac": float(np.mean(out["restDetected"]))}
     if turn_frac > 0.5:
