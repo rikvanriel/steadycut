@@ -24,6 +24,24 @@ only case that wants re-measurement, and that is future work, not drift.
 import numpy as np
 
 
+def tilt_from_gravity(gvec, axis_map) -> tuple:
+    """(pitch, roll) tilt in degrees for a body-frame gravity vector.
+
+    Roll is the existing convention (shift_from_gravity, unchanged).
+    Pitch is the complementary axis: forward-component tilt that a
+    roll-only correction leaves in the frame (head-down black frames).
+    Both are additive slots in the renderer's decomposition.
+    """
+    cols = [axis_map.pitch[0], axis_map.yaw[0], axis_map.roll[0]]
+    gx, gy, gz = (float(gvec[c]) for c in cols)
+    roll = float(np.degrees(np.arctan2(-gx, gy)))
+    # pitch reads the forward tilt (body-z = col roll[0]): gravity
+    # gains a forward component when pitched. Validated: forward tilt
+    # -> pitch only, lateral tilt -> roll only (probe 2026-10-18).
+    pitch = float(np.degrees(np.arctan2(gz, np.hypot(gx, gy))))
+    return pitch, roll
+
+
 def shift_from_gravity(gvec, axis_map) -> float:
     """Additive roll shift (degrees) for a body-frame gravity median.
 

@@ -249,7 +249,7 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     freeze spans are computed wide so rejoins at window edges are sane.
     """
     import vqf
-    from steadycut.stabilization.level import shift_from_gravity
+    from steadycut.stabilization.level import tilt_from_gravity
     t = np.asarray(t, float)
     gyro = np.asarray(gyro, float)
     accel = np.asarray(accel, float)
@@ -288,8 +288,10 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     gvec[:, p_col] = up_body[:, 0] / p_sign
     gvec[:, r_col] = up_body[:, 1] / r_sign
     gvec[:, g_col] = up_body[:, 2] / g_sign
-    raw = np.array([shift_from_gravity(gvec[i], axis_map)
+    raw = np.array([tilt_from_gravity(gvec[i], axis_map)[1]
                     for i in range(len(t))])
+    raw_pitch = np.array([tilt_from_gravity(gvec[i], axis_map)[0]
+                          for i in range(len(t))])
     w, x, y, z = np.asarray(out["quat6D"], float).T
     # freeze gate: SUSTAINED body yaw rate (turn_state: 2.5 s entry, so
     # spikes and glances never enter), backward-dilated for the entry.
@@ -323,6 +325,7 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     frozen = turn_m
     # hold pre-freeze value through each span, raised-cosine rejoin
     shifts = raw.copy()
+    pitch_shifts = raw_pitch.copy()
     n = len(t)
     i = 0
     spans = []
@@ -375,33 +378,44 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
         G = bridged.get((a, b))
         if G is not None:
             # gyro-carried world reference through the turn: per-sample
-            # shifts from the carried up-vector via the settled formula.
-            # Start-blend from the previous final value (whatever wrote
-            # it: raw, hold, or the last span's carry) so adjacent
-            # spans join continuously instead of jumping raw->carried.
-            car = np.array([shift_from_gravity(gv, axis_map) for gv in G])
+            # (pitch, roll) tilts from the carried up-vector via the
+            # settled formula. Start-blend from the previous final value
+            # so adjacent spans join continuously.
+            car = np.array([tilt_from_gravity(gv, axis_map)[1]
+                            for gv in G])
+            carp = np.array([tilt_from_gravity(gv, axis_map)[0]
+                             for gv in G])
             m0 = min(a, int(round(2.0 / dt)), len(car))
             if m0 > 1 and a > 0:
                 wgt = 0.5 - 0.5 * np.cos(np.pi * np.arange(m0) / m0)
                 car[:m0] = (1 - wgt) * shifts[a - 1] + wgt * car[:m0]
+                carp[:m0] = (1 - wgt) * pitch_shifts[a - 1] + wgt * carp[:m0]
             shifts[a:b + 1] = car
+            pitch_shifts[a:b + 1] = carp
             continue
         # unbridgeable (no settled anchor either side): constant hold
         lo = max(0, a - int(round(1.0 / dt)))
         pre = raw[lo:a] if a > lo else np.array([])
         hold = float(np.median(pre)) if len(pre) else (
             raw[b + 1] if b + 1 < n else float(np.median(raw)))
+        prep = raw_pitch[lo:a] if a > lo else np.array([])
+        holdp = float(np.median(prep)) if len(prep) else (
+            raw_pitch[b + 1] if b + 1 < n else float(np.median(raw_pitch)))
         shifts[a:b + 1] = hold
+        pitch_shifts[a:b + 1] = holdp
         m = min(n - b - 1, int(round(2.0 / dt)))
         if m > 1 and b + 1 < n:
             wgt = 0.5 - 0.5 * np.cos(np.pi * np.arange(m) / m)
             shifts[b + 1:b + 1 + m] = ((1 - wgt) * hold + wgt * raw[b + 1:b + 1 + m])
+            pitch_shifts[b + 1:b + 1 + m] = (
+                (1 - wgt) * holdp + wgt * raw_pitch[b + 1:b + 1 + m])
     # level reference carries no shake: the gyro path owns fast motion.
     # Zero-phase lowpass at level timescales (vibration-speed noise in
     # VQF attitude otherwise lands straight in the roll slots: measured
     # 24 deg/frame pump on Mar05 from +-8 deg unsmoothed shifts).
     from steadycut.stabilization.orientation import _smooth_1d
     shifts = _smooth_1d(shifts, t, 3.0)
+    pitch_shifts = _smooth_1d(pitch_shifts, t, 3.0)
     if sel is None:
         lo, hi = 0, n
     else:
@@ -417,6 +431,8 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
             "n_unbridged": n_u,
             "shift_p95": float(np.percentile(np.abs(shifts[lo:hi]), 95))
             if hi > lo else 0.0,
+            "pitch_p95": float(np.percentile(np.abs(pitch_shifts[lo:hi]), 95))
+            if hi > lo else 0.0,
             "raw_p95": float(np.percentile(np.abs(raw[lo:hi]), 95))
             if hi > lo else 0.0,
             "rest_frac": float(np.mean(out["restDetected"]))}
@@ -431,4 +447,4 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     if abs(float(np.median(_roll))) > 90.0:
         info["refused"] = ("roll median %.0f deg: inverted attitude" %
                            float(np.median(_roll)))
-    return shifts, info
+    return shifts, pitch_shifts, info

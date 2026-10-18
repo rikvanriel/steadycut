@@ -508,8 +508,8 @@ def main(argv=None) -> int:
                  (imu.time_s < spec.start + spec.duration + 60.0))
             w = ((imu.time_s[m] >= spec.start) &
                  (imu.time_s[m] < spec.start + spec.duration))
-            sh, li = _vl.level_shifts(imu.time_s[m], imu.gyro[m],
-                                      imu.accel[m], am, sel=w)
+            sh, psh, li = _vl.level_shifts(imu.time_s[m], imu.gyro[m],
+                                         imu.accel[m], am, sel=w)
             if "refused" in li:
                 cert["level_vqf"] = {k: round(v, 3) for k, v in li.items()
                                      if isinstance(v, (int, float))}
@@ -521,8 +521,13 @@ def main(argv=None) -> int:
                 pt = _np.array([p.t for p in pts])
                 dl = _vl.resample_shifts(pt, imu.time_s[m], sh,
                                          spec.start)
-                pts = [dataclasses.replace(p, roll=float(p.roll) + float(d))
-                       for p, d in zip(pts, dl)]
+                dp = _vl.resample_shifts(pt, imu.time_s[m], psh,
+                                         spec.start)
+                pts = [dataclasses.replace(
+                    p, roll=float(p.roll) + float(d),
+                    pitch=(float(p.pitch) + float(q)
+                           if a.pitch_aim is None else float(p.pitch)))
+                       for p, d, q in zip(pts, dl, dp)]
                 cert["level_vqf"] = {k: round(v, 3) for k, v in li.items()}
                 cert["level_vqf"]["applied"] = True
                 cert["level_vqf"]["static_skipped"] = True

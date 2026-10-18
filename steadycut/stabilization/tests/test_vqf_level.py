@@ -31,7 +31,7 @@ def test_rigid_roll_tracks():
     g = 9.81
     gyro = np.column_stack([np.degrees(thd), np.zeros(n), np.zeros(n)])
     accel = np.column_stack([np.zeros(n), g * np.cos(th), g * np.sin(th)])
-    s, _ = VL.level_shifts(t, gyro, accel, Map())
+    s, _ps, _ = VL.level_shifts(t, gyro, accel, Map())
     thd_deg = np.degrees(th)
     c = float(np.corrcoef(s[50:-50], thd_deg[50:-50])[0, 1])
     # direction presence at full amplitude (sign asserted below
@@ -57,7 +57,7 @@ def test_coordinated_turn_no_bank():
     accel = np.column_stack([rng.normal(0, 0.15, n),
                              np.full(n, g) + rng.normal(0, 0.15, n),
                              np.full(n, g) + rng.normal(0, 0.15, n)])
-    s, info = VL.level_shifts(t, gyro, accel, Map())
+    s, _ps, info = VL.level_shifts(t, gyro, accel, Map())
     naive = np.array([shift_from_gravity(accel[i], Map())
                       for i in range(n)])
     assert float(np.percentile(np.abs(s - np.median(s)), 95)) < 10.0, info
@@ -110,7 +110,7 @@ def test_bridge_spin_about_vertical():
     accel[:, 2] = -acc_body[:, 0]
     accel[:, 0] = -acc_body[:, 1]
     accel[:, 1] = +acc_body[:, 2]
-    s, info = VL.level_shifts(t, gyro, accel, Map())
+    s, _ps, info = VL.level_shifts(t, gyro, accel, Map())
     true = np.array([shift_from_gravity(accel[i], Map())
                      for i in range(n)])
     mid = slice(n_c, n_c + n_t)
@@ -171,7 +171,7 @@ def test_slalom_cycle_cancels_lateral():
     accel[:, 2] = -acc_body[:, 0]
     accel[:, 0] = -acc_body[:, 1]
     accel[:, 1] = +acc_body[:, 2]
-    s, info = VL.level_shifts(t, gyro, accel, Map())
+    s, _ps, info = VL.level_shifts(t, gyro, accel, Map())
     # truth: lateral-free gravity through the post-fix frame
     # body = (-raw[2], -raw[0], +raw[1]) -> raw = (-b1, +b2, -b0)
     true = np.array([shift_from_gravity(
@@ -182,6 +182,18 @@ def test_slalom_cycle_cancels_lateral():
     # flip anchors cut the lateral-tilt error (~17 deg per leg) to
     # ~6 deg; the rest is gyro-carry drift plus flip-instant transients
     assert err < 8.0, (err, info)
+
+
+def test_pitch_axis_complements_roll():
+    # (g) full-tilt: static 20-deg pitch-forward tilt reads ~20 deg in
+    # the pitch channel and ~0 in roll; roll formula untouched.
+    from steadycut.stabilization.level import tilt_from_gravity
+    g = 9.81
+    p, r = tilt_from_gravity(np.array(
+        [g * np.sin(np.radians(20.0)), g * np.cos(np.radians(20.0)),
+         0.0]), Map())
+    assert abs(p - 20.0) < 1.0, (p, r)
+    assert abs(r) < 1.0, (p, r)
 
 
 def test_up_convention_matches_static():
@@ -196,7 +208,7 @@ def test_up_convention_matches_static():
     accel = np.column_stack([np.zeros(n),
                              np.full(n, g * np.cos(tilt)),
                              np.full(n, g * np.sin(tilt))])
-    s, _ = VL.level_shifts(t, gyro, accel, Map())
+    s, _ps, _ = VL.level_shifts(t, gyro, accel, Map())
     assert abs(float(np.median(s)) - float(shift_from_gravity(
         np.array([0.0, g * np.cos(tilt), g * np.sin(tilt)]),
         Map()))) < 1.0
@@ -221,7 +233,7 @@ def test_static_tilt_carried():
     gyro = np.zeros((n, 3))
     accel = np.column_stack([np.zeros(n), np.full(n, g * np.cos(th)),
                              np.full(n, g * np.sin(th))])
-    s, _ = VL.level_shifts(t, gyro, accel, Map())
+    s, _ps, _ = VL.level_shifts(t, gyro, accel, Map())
     st = shift_from_gravity(
         np.array([0.0, g * np.cos(th), g * np.sin(th)]), Map())
     assert abs(float(np.median(s[100:-100])) - st) < 3.0
