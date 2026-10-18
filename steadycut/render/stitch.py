@@ -764,11 +764,11 @@ def sphere_filtergraph(spec: StitchSpec, gain: tuple,
         fg = (
             f"[0:v]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_a}"
             f":iv_fov={spec.lens_fov_a}:w={w}:h={h},format=gbrp[c0];"
-            f"[c0][3:v]format=gbrp[tAp];[c0][tAp]blend=all_mode=addition[c1];"
-            f"[c1][4:v]format=gbrp[tAn];[c1][tAn]blend=all_mode=subtract[c];"
+            f"[3:v]format=gbrp[tAp];[c0][tAp]blend=all_mode=addition[c1];"
+            f"[4:v]format=gbrp[tAn];[c1][tAn]blend=all_mode=subtract[c];"
             f"[1:v]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_b}"
             f":iv_fov={spec.lens_fov_b}:yaw=180:w={w}:h={h},format=gbrp[d0];"
-            f"[d0][5:v]format=gbrp[tBp];[d0][tBp]blend=all_mode=addition[d1];"
-            f"[d1][6:v]format=gbrp[tBn];[d1][tBn]blend=all_mode=subtract[d];"
+            f"[5:v]format=gbrp[tBp];[d0][tBp]blend=all_mode=addition[d1];"
+            f"[6:v]format=gbrp[tBn];[d1][tBn]blend=all_mode=subtract[d];"
             f"[2:v]format=gbrp[e];[c][d][e]maskedmerge,format=yuv444p[s]")
     return fg, mask
