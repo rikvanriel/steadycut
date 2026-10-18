@@ -502,16 +502,23 @@ def main(argv=None) -> int:
                  (imu.time_s < spec.start + spec.duration))
             sh, li = _vl.level_shifts(imu.time_s[m], imu.gyro[m],
                                       imu.accel[m], am)
-            # resample per-sample shifts onto the path timestamps
-            import numpy as _np
-            pt = _np.array([p.t for p in pts])
-            dl = _np.interp(pt, imu.time_s[m], sh,
-                            left=sh[0], right=sh[-1])
-            pts = [dataclasses.replace(p, roll=float(p.roll) + float(d))
-                   for p, d in zip(pts, dl)]
-            cert["level_vqf"] = {k: round(v, 3) for k, v in li.items()}
-            print(f"CLI| vqf level p95 {li['shift_p95']:+.1f}deg "
-                  f"turn_frac {li['turn_frac']:.2f}")
+            if "refused" in li:
+                cert["level_vqf"] = {k: round(v, 3) for k, v in li.items()
+                                     if isinstance(v, (int, float))}
+                cert["level_vqf"]["applied"] = False
+                cert["level_vqf"]["reason"] = li["refused"]
+                print(f"CLI| vqf level REFUSED ({li['refused']})")
+            else:
+                # resample per-sample shifts onto the path timestamps
+                import numpy as _np
+                pt = _np.array([p.t for p in pts])
+                dl = _np.interp(pt, imu.time_s[m], sh,
+                                left=sh[0], right=sh[-1])
+                pts = [dataclasses.replace(p, roll=float(p.roll) + float(d))
+                       for p, d in zip(pts, dl)]
+                cert["level_vqf"] = {k: round(v, 3) for k, v in li.items()}
+                print(f"CLI| vqf level p95 {li['shift_p95']:+.1f}deg "
+                      f"turn_frac {li['turn_frac']:.2f}")
         if a.yaw_bias_track:
             import dataclasses
             anchors = sorted(json.load(open(a.yaw_bias_track)),

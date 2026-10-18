@@ -106,9 +106,15 @@ def level_shifts(t, gyro, accel, axis_map):
             wgt = 0.5 - 0.5 * np.cos(np.pi * np.arange(m) / m)
             shifts[b + 1:b + 1 + m] = ((1 - wgt) * hold + wgt * raw[b + 1:b + 1 + m])
     frozen_n = sum(b - a + 1 for a, b in spans)
-    info = {"turn_frac": float(frozen_n / max(1, n)),
+    turn_frac = float(frozen_n / max(1, n))
+    info = {"turn_frac": turn_frac,
             "n_turns": len(spans),
             "shift_p95": float(np.percentile(np.abs(shifts), 95)),
             "rest_frac": float(np.mean(out["restDetected"])),
             "innov_p95": float(np.percentile(innov_h, 95))}
+    if turn_frac > 0.5:
+        # open-loop most of the run (no steady second anywhere):
+        # refuse rather than pump. Caller falls back to static.
+        info["refused"] = ("turn_frac %.2f > 0.50: no gravity reference "
+                           "in this window" % turn_frac)
     return shifts, info
