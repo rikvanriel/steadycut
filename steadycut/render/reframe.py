@@ -315,7 +315,18 @@ def render(
             gain = measure_gain(str(source),
                                 t=start if start is not None else 5.0)
         gain_measured = stitch.gain is None
-        sfg, mask_path = sphere_filtergraph(stitch, gain, sphere_size)
+        # static tone fields (edge+residual, rep frame): no per-frame cost,
+        # skipped on dry runs (measurement reads pixels; dry runs print)
+        tone = None
+        tone_info = None
+        if not dry_run:
+            from steadycut.render.stitch import tone_fields
+            t_rep = (start if start is not None else 5.0) + (
+                duration / 2 if duration else 0.0)
+            tone, tone_info = tone_fields(str(source), stitch, gain,
+                                          t_rep, sphere_size)
+        sfg, mask_path = sphere_filtergraph(stitch, gain, sphere_size,
+                                            tone=tone)
         if dry_run:
             lens_a = Path("baked-lens-A.mp4")
             lens_b = Path("baked-lens-B.mp4")
@@ -333,6 +344,7 @@ def render(
             "ramp_deg": stitch.ramp_deg,
             "deflare_poly": list(stitch.deflare_poly),
             "deflare_scale": getattr(stitch, "deflare_scale", None),
+            "tone": tone_info,
             "optics_id": getattr(stitch, "optics_id", None),
             "seam": getattr(stitch, "seam", "meridian")}
     else:
@@ -450,13 +462,24 @@ def render(
             args += ["-i", str(lens_a), "-i", str(lens_b),
                      "-loop", "1", "-framerate",
                      f"{source_fps(str(source)):g}",
-                     "-i", str(mask_path)] + blend_seek + ["-i", str(source)]
+                     "-i", str(mask_path)]
+            if tone is not None:
+                # tone stills ride as [3:v]..[6:v] (looped, video rate);
+                # the audio source shifts from [3] to [7]
+                for tp in tone:
+                    args += ["-loop", "1", "-framerate",
+                             f"{source_fps(str(source)):g}", "-i", str(tp)]
+                args += blend_seek + ["-i", str(source)]
+                audio_idx = 7
+            else:
+                args += blend_seek + ["-i", str(source)]
+                audio_idx = 3
         else:
             args += ["-i", str(source)]
         args += [
             "-filter_complex", filtergraph,
             "-map", "[v]",
-            "-map", "3:a:0?" if use_blend else "0:a:0?",
+            "-map", f"{audio_idx}:a:0?" if use_blend else "0:a:0?",
         ]
     else:
         filtergraph = reproject

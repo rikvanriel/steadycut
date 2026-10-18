@@ -354,15 +354,20 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
         f"[0:v:0]format=gbrp[a0];[1:v]format=gbrp[df1];[2:v]format=gbrp[df2];"
         + (f"[3:v]format=gbrp[lvP];[4:v]format=gbrp[lvN];"
            if spec.leveling is not None else "") +
+        # fps AFTER setpts (CFR rebase): the two .insv streams have
+        # independent clocks (PTS gaps in B); without this the downstream
+        # maskedmerge framesync starves intermittently and the B half of
+        # the delivered frame blinks black (measured 19.8 DN every few
+        # frames). Filling by duplication, never by black.
         f"[a0][df1]blend=all_mode=subtract,format=yuv444p,"
-        f"setpts=PTS-STARTPTS[a];"
+        f"setpts=PTS-STARTPTS,fps={fps}[a];"
         f"[0:v:1]format=gbrp,lutrgb=r='clip(val*{gr:.4f},0,255)'"
         f":g='clip(val*{gg:.4f},0,255)':b='clip(val*{gb:.4f},0,255)'[b0];"
         + (f"{lv}[by][df2]blend=all_mode=subtract,format=yuv444p,"
-           f"setpts=PTS-STARTPTS[b]"
+           f"setpts=PTS-STARTPTS,fps={fps}[b]"
            if spec.leveling is not None else
            f"[b0][df2]blend=all_mode=subtract,format=yuv444p,"
-           f"setpts=PTS-STARTPTS[b]"))
+           f"setpts=PTS-STARTPTS,fps={fps}[b]"))
     args = ["ffmpeg", "-hide_banner", "-v", "error", "-y"]
     # -ss/-t are INPUT options: they must sit immediately before the source
     # they bound, or ffmpeg applies -t to the still-image input instead.
@@ -414,65 +419,9 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
     cv2 = __import__("cv2")
     w, h = sphere_size
     g = gain or measure_gain(source, t)  # stills match the bake
-    gb, gg, gr = g
     with tempfile.TemporaryDirectory() as tmp:
-        for trk in (0, 1):
-            out = f"{tmp}/lens{trk}.png"
-            subprocess.run(
-                f"ffmpeg -hide_banner -v error -ss {t} -i {source} "
-                f"-map 0:v:{trk} -frames:v 1 -y {out}",
-                shell=True, check=True, timeout=120)
-        a = cv2.imread(f"{tmp}/lens0.png")
-        b = cv2.imread(f"{tmp}/lens1.png")
-        # deflare (blue subtract) + gain, mirroring bake_lens_tracks.
-        # The field stores excess in the BLUE channel: read color and take
-        # [:,:,0], never grayscale (0.114*B rounds single-digit excess to 0).
-        # Per-lens frames AND per-lens application: B was never deflared in
-        # stills (A-only), which is exactly the B-side blue the seam shows.
-        scl = spec.deflare_scale
-        if scl is None:
-            scl = measure_deflare_scale(source, spec.deflare_poly, t)
-        if not isinstance(scl, (tuple, list)):
-            scl = (float(scl), float(scl))
-        dbA = cv2.imread(str(deflare_frame(
-            spec.lens_fov_a, spec.deflare_poly, scl[0])))[:, :, 0]
-        dbB = cv2.imread(str(deflare_frame(
-            spec.lens_fov_b, spec.deflare_poly, scl[1])))[:, :, 0]
-        if dbA.shape[:2] != a.shape[:2]:
-            dbA = cv2.resize(dbA, (a.shape[1], a.shape[0]))
-        if dbB.shape[:2] != a.shape[:2]:
-            dbB = cv2.resize(dbB, (a.shape[1], a.shape[0]))
-        a = a.astype(np.float32)
-        a[:, :, 0] = np.clip(a[:, :, 0] - dbA.astype(np.float32), 0, 255)
-        b = np.clip(b.astype(np.float32) *
-                    np.array(g, np.float32), 0, 255)  # g is (B,G,R), BGR order
-        b[:, :, 0] = np.clip(b[:, :, 0] - dbB.astype(np.float32), 0, 255)
-        # rim-blue: the fisheye circle edge renders +20..+160 excess blue
-        # (measured snow-only), magnified by v360 into the seam bands.
-        # Per-recording radial profile (same pattern as per-clip gain).
-        from steadycut.render.rim import rim_blue_correct
-        a = rim_blue_correct(a.astype(np.uint8)).astype(np.float32)
-        b = rim_blue_correct(b.astype(np.uint8)).astype(np.float32)
-        cv2.imwrite(f"{tmp}/pa.png", a.astype(np.uint8))
-        cv2.imwrite(f"{tmp}/pb.png", b.astype(np.uint8))
-        eq = []
-        for tag, fov, yaw in (("pa", spec.lens_fov_a, 0),
-                              ("pb", spec.lens_fov_b, 180)):
-            p = f"{tmp}/eq_{tag}.png"
-            eq.append(p)
-            subprocess.run(
-                f"ffmpeg -hide_banner -v error -i {tmp}/{tag}.png -vf "
-                f"\"v360=input=fisheye:output=e:ih_fov={fov}:iv_fov={fov}"
-                f":yaw={yaw}:w={w}:h={h}\" -frames:v 1 -y {p}",
-                shell=True, check=True, timeout=120)
-        ea = cv2.imread(eq[0]).astype(np.float32)
-        eb = cv2.imread(eq[1]).astype(np.float32)
-        if keep_equirects_dir is not None:
-            import shutil
-            kd = Path(keep_equirects_dir)
-            kd.mkdir(parents=True, exist_ok=True)
-            shutil.copy(eq[0], kd / "eqA.png")
-            shutil.copy(eq[1], kd / "eqB.png")
+        ea, eb = lens_equirects(source, spec, g, t, tmp, sphere_size,
+                                keep_dir=keep_equirects_dir)
         wgt, _ = blend_weight(w, h, spec.ramp_deg, spec.lens_fov_a,
                                 spec.lens_fov_b)
         if getattr(spec, "seam", "meridian") == "routed":
@@ -534,6 +483,128 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
                f"_S{getattr(spec, 'seam', 'meridian')}.png")
         cv2.imwrite(str(dst), img)
         return dst
+
+
+def lens_equirects(source, spec, gain, t, tmp, sphere_size=(2048, 1024),
+                   keep_dir=None):
+    """Shared first half of sphere_still: per-lens extract, per-lens deflare,
+    gain, rim, v360 to equirect. Returns (ea, eb) float32 BGR. tone_fields
+    and sphere_still share it so video and stills correct identically.
+    keep_dir: when set, the per-lens equirects are kept there (eqA/eqB)."""
+    import numpy as np
+    import subprocess
+    cv2 = __import__("cv2")
+    w, h = sphere_size
+    for trk in (0, 1):
+        out = f"{tmp}/lens{trk}.png"
+        subprocess.run(
+            f"ffmpeg -hide_banner -v error -ss {t} -i {source} "
+            f"-map 0:v:{trk} -frames:v 1 -y {out}",
+            shell=True, check=True, timeout=120)
+    a = cv2.imread(f"{tmp}/lens0.png")
+    b = cv2.imread(f"{tmp}/lens1.png")
+    scl = spec.deflare_scale
+    if scl is None:
+        scl = measure_deflare_scale(source, spec.deflare_poly, t)
+    if not isinstance(scl, (tuple, list)):
+        scl = (float(scl), float(scl))
+    dbA = cv2.imread(str(deflare_frame(
+        spec.lens_fov_a, spec.deflare_poly, scl[0])))[:, :, 0]
+    dbB = cv2.imread(str(deflare_frame(
+        spec.lens_fov_b, spec.deflare_poly, scl[1])))[:, :, 0]
+    if dbA.shape[:2] != a.shape[:2]:
+        dbA = cv2.resize(dbA, (a.shape[1], a.shape[0]))
+    if dbB.shape[:2] != a.shape[:2]:
+        dbB = cv2.resize(dbB, (a.shape[1], a.shape[0]))
+    a = a.astype(np.float32)
+    a[:, :, 0] = np.clip(a[:, :, 0] - dbA.astype(np.float32), 0, 255)
+    b = np.clip(b.astype(np.float32) *
+                np.array(gain, np.float32), 0, 255)
+    b[:, :, 0] = np.clip(b[:, :, 0] - dbB.astype(np.float32), 0, 255)
+    from steadycut.render.rim import rim_blue_correct
+    a = rim_blue_correct(a.astype(np.uint8)).astype(np.float32)
+    b = rim_blue_correct(b.astype(np.uint8)).astype(np.float32)
+    cv2.imwrite(f"{tmp}/pa.png", a.astype(np.uint8))
+    cv2.imwrite(f"{tmp}/pb.png", b.astype(np.uint8))
+    eq = []
+    for tag, fov, yaw in (("pa", spec.lens_fov_a, 0),
+                          ("pb", spec.lens_fov_b, 180)):
+        q = f"{tmp}/eq_{tag}.png"
+        eq.append(q)
+        subprocess.run(
+            f"ffmpeg -hide_banner -v error -i {tmp}/{tag}.png -vf "
+            f"\"v360=input=fisheye:output=e:ih_fov={fov}:iv_fov={fov}"
+            f":yaw={yaw}:w={w}:h={h}\" -frames:v 1 -y {q}",
+            shell=True, check=True, timeout=120)
+    ea = cv2.imread(eq[0]).astype(np.float32)
+    eb = cv2.imread(eq[1]).astype(np.float32)
+    if keep_dir is not None:
+        import shutil
+        from pathlib import Path as _P
+        kd = _P(keep_dir)
+        kd.mkdir(parents=True, exist_ok=True)
+        shutil.copy(eq[0], kd / "eqA.png")
+        shutil.copy(eq[1], kd / "eqB.png")
+    return ea, eb
+
+
+
+def tone_fields(source: str, spec, gain: tuple, t: float,
+                sphere_size=(2048, 1024)):
+    """Per-window static tone corrections for the VIDEO path (cached/file+t).
+
+    The still path corrects per frame in numpy (edge_flatten +
+    residual_level); video cannot afford per-frame Python, so the same two
+    stages run ONCE on a representative frame and the corrections ride as
+    four looped stills (pos/neg per lens: blend has no signed pixels),
+    subtracted in sphere_filtergraph like the leveling lobes. AE drift
+    across a window is small; static is honest. Returns
+    (posA, negA, posB, negB) Paths + info dict.
+    """
+    import numpy as np
+    import tempfile
+    cv2 = __import__("cv2")
+    key_src = (f"{Path(source).resolve()}|{Path(source).stat().st_size}"
+               f"|{round(t, 1)}|tone")
+    try:
+        db = None
+        cache = cache_dir() / "gains.json"
+        db = json.loads(cache.read_text()) if cache.exists() else {}
+        if key_src in db and all((cache_dir() / f).exists()
+                                 for f in db[key_src]["files"]):
+            return tuple(cache_dir() / f for f in db[key_src]["files"]), \
+                db[key_src]["info"]
+    except (OSError, ValueError):
+        db = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        ea, eb = lens_equirects(source, spec, gain, t, tmp, sphere_size)
+        w, h = sphere_size
+        from steadycut.render.sphere_maps import blend_weight
+        from steadycut.render.nearfield import (edge_flatten, eroded_validity,
+                                                residual_level)
+        wgt, _ = blend_weight(w, h, spec.ramp_deg, spec.lens_fov_a,
+                              spec.lens_fov_b)
+        vA = eroded_validity(ea.mean(axis=2))
+        vB = eroded_validity(eb.mean(axis=2))
+        ea2, eb2, einfo = edge_flatten(ea.copy(), eb.copy(), wgt, vA, vB)
+        ea3, eb3, linfo = residual_level(ea2, eb2, wgt, vA, vB)
+        info = {"edge": einfo, "level": linfo}
+        outs = []
+        for tag, before, after in (("toneA", ea, ea3), ("toneB", eb, eb3)):
+            corr = after - before
+            for nm, part in (("pos", np.clip(corr, 0, 255)),
+                             ("neg", np.clip(-corr, 0, 255))):
+                p = (cache_dir() /
+                     f"tone_{Path(source).stem}_t{t:g}_{tag}_{nm}.png")
+                cv2.imwrite(str(p), part.astype(np.uint8))
+                outs.append(p)
+    try:
+        if db is not None:
+            db[key_src] = {"files": [f.name for f in outs], "info": info}
+            (cache_dir() / "gains.json").write_text(json.dumps(db))
+    except (OSError, ValueError):
+        pass
+    return tuple(outs), info
 
 
 def measure_step(still_path, width=2048, seams=(512, 1536),
@@ -665,12 +736,15 @@ def load_polylines(path) -> dict | None:
 
 
 def sphere_filtergraph(spec: StitchSpec, gain: tuple,
-                       sphere_size=(2048, 1024)) -> tuple[str, Path]:
+                       sphere_size=(2048, 1024), tone=None) -> tuple[str, Path]:
     """Two-pass sphere assembly over BAKED lens tracks (see bake_lens_tracks:
     deflare + gain already applied). Inputs: [0:v] lens A equirect source,
     [1:v] lens B equirect source, [2:v] ramp mask. Each lens is projected
     with its own calibrated FOV; maskedmerge joins them on [s].
-    Returns (filter snippet, mask path)."""
+    tone: optional (posA, negA, posB, negB) looped-still Paths from
+    tone_fields (static per-window edge/residual corrections). They ride as
+    [3:v]..[6:v]; applied post-v360 pre-merge in GBRP (corrections are
+    computed in BGR). Returns (filter snippet, mask path)."""
     w, h = sphere_size
     polys = None
     if getattr(spec, "seam", "meridian") == "routed" and spec.seam_path:
@@ -684,4 +758,17 @@ def sphere_filtergraph(spec: StitchSpec, gain: tuple,
         f"[1:v]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_b}"
         f":iv_fov={spec.lens_fov_b}:yaw=180:w={w}:h={h},format=yuv444p[d];"
         f"[2:v]format=gbrp[e];[c][d][e]maskedmerge,format=yuv444p[s]")
+    if tone is not None:
+        # static tone corrections post-v360 (GBRP: corrections are BGR),
+        # pre-merge: [3:v]..[6:v] = posA/negA/posB/negB looped stills
+        fg = (
+            f"[0:v]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_a}"
+            f":iv_fov={spec.lens_fov_a}:w={w}:h={h},format=gbrp[c0];"
+            f"[c0][3:v]format=gbrp[tAp];[c0][tAp]blend=all_mode=addition[c1];"
+            f"[c1][4:v]format=gbrp[tAn];[c1][tAn]blend=all_mode=subtract[c];"
+            f"[1:v]v360=input=fisheye:output=e:ih_fov={spec.lens_fov_b}"
+            f":iv_fov={spec.lens_fov_b}:yaw=180:w={w}:h={h},format=gbrp[d0];"
+            f"[d0][5:v]format=gbrp[tBp];[d0][tBp]blend=all_mode=addition[d1];"
+            f"[d1][6:v]format=gbrp[tBn];[d1][tBn]blend=all_mode=subtract[d];"
+            f"[2:v]format=gbrp[e];[c][d][e]maskedmerge,format=yuv444p[s]")
     return fg, mask
