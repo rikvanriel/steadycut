@@ -105,6 +105,12 @@ def level_shifts(t, gyro, accel, axis_map):
         if m > 1 and b + 1 < n:
             wgt = 0.5 - 0.5 * np.cos(np.pi * np.arange(m) / m)
             shifts[b + 1:b + 1 + m] = ((1 - wgt) * hold + wgt * raw[b + 1:b + 1 + m])
+    # level reference carries no shake: the gyro path owns fast motion.
+    # Zero-phase lowpass at level timescales (vibration-speed noise in
+    # VQF attitude otherwise lands straight in the roll slots: measured
+    # 24 deg/frame pump on Mar05 from +-8 deg unsmoothed shifts).
+    from steadycut.stabilization.orientation import _smooth_1d
+    shifts = _smooth_1d(shifts, t, 3.0)
     frozen_n = sum(b - a + 1 for a, b in spans)
     turn_frac = float(frozen_n / max(1, n))
     info = {"turn_frac": turn_frac,
