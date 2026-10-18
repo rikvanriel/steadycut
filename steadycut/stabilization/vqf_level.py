@@ -109,7 +109,7 @@ def _best_anchor(score, edge, side, dt, n):
     return best, bq
 
 
-def bridge_spans(t, gyr, acc, spans, R, axis_map, dt):
+def bridge_spans(t, gyr, acc, spans, R, axis_map, dt, cycles=()):
     """Gyro-carry the world-fixed up reference through frozen spans.
     carry; else post: backward carry), integrate body rate through,
     and blend carried vs fresh VQF over 2 s on re-anchor. Returns
@@ -145,6 +145,35 @@ def bridge_spans(t, gyr, acc, spans, R, axis_map, dt):
         # hold (counted unbridged, may trip refusal).
         if (b + 1 - a) * dt > 20.0:
             n_u += 1
+            continue
+        # in-cycle span: inherit the cycle's world gravity (L+R lateral
+        # cancelled over the full cycle) instead of the lowest-
+        # innovation second (VQF absorbs sustained lateral as gravity;
+        # agreement then lies). Anchor at the span's own lowest-
+        # innovation instant (VQF best-converged there), carry from it.
+        g_world = None
+        for a0, b0, gw in cycles:
+            if a >= a0 - int(round(5.0 / dt)) and \
+                    b <= b0 + int(round(5.0 / dt)):
+                g_world = gw
+                break
+        if g_world is not None:
+            c = a + int(np.argmin(innov[a:b + 1]))
+            u_c = R[c].T @ g_world
+            u_c = u_c / max(float(np.linalg.norm(u_c)), 1e-12)
+            seg_f = np.arange(c, b + 1)
+            seg_b = np.arange(a, c + 1)
+            Uf = _carry_up(u_c, wb[seg_f], np.gradient(t[seg_f]), +1)
+            Ub = _carry_up(u_c, wb[seg_b], np.gradient(t[seg_b]), -1)
+            U = np.zeros((b + 1 - a, 3))
+            U[c - a:] = Uf
+            if c - a > 0:
+                U[:c - a] = Ub[:c - a]
+            G = np.zeros((b + 1 - a, 3))
+            for i, (cc, s) in enumerate(body_of):
+                G[:, cc] = s * (9.81 * U[:, i])
+            synth[(a, b)] = G
+            n_b += 1
             continue
         # settled = gate-calm AND directly slow: the gate's entry delay
         # leaves the first second calm while already spinning, so an
@@ -269,6 +298,10 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
                                          (g_col, g_sign)]])
     yaw_w = _wb[:, 2]
     back = int(round(2.5 / dt))
+    acc_vqf_all = np.column_stack(
+        [s * np.asarray(accel, float)[:, c]
+         for c, s in [(p_col, p_sign), (r_col, r_sign),
+                       (g_col, g_sign)]])
     turn_m = _O.turn_state(t, yaw_w, smooth_s=2.0)
     # dilate each contiguous span backward (entry coverage), offline luxury
     idx = np.flatnonzero(turn_m)
@@ -296,6 +329,7 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     # covering L-then-R would merge into one long carry that trips the
     # 20 s cap. Cut where 1 s means on both sides disagree in sign and
     # both clear 6 deg/s (whip flicker near zero never cuts).
+    _mega = list(spans)
     _sm = np.convolve(yaw_w, np.ones(max(1, int(round(2.0 / dt))))
                       / max(1, int(round(2.0 / dt))), mode="same")
     _w1 = max(1, int(round(1.0 / dt)))
@@ -319,11 +353,27 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
             if s1 - 1 >= s0:
                 _split.append((s0, s1 - 1))
     spans = _split
+    # slalom cycles on the UNSPLIT mega-spans: net-zero heading with
+    # high total rotation means L+R lateral cancels — mean world-frame
+    # gravity over the cycle is true vertical even though VQF's
+    # per-sample attitude under sustained lateral is biased. Slivers
+    # inherit their cycle's gravity (short carries, robust anchor).
+    _cycles = []
+    for a, b in _mega:
+        seg_yaw = yaw_w[a:b + 1] * dt  # yaw_w is already deg/s
+        if abs(float(seg_yaw.sum())) < 30.0 and \
+                float(np.abs(seg_yaw).sum()) > 120.0:
+            acc_u = acc_vqf_all / np.maximum(
+                np.linalg.norm(acc_vqf_all, axis=1, keepdims=True), 1e-12)
+            gw = (R[a:b + 1] @ acc_u[a:b + 1][..., None]
+                  ).mean(axis=0).ravel()
+            gw = gw / max(float(np.linalg.norm(gw)), 1e-12)
+            _cycles.append((a, b, gw))
     # anchor-bridge: gyro-carry the world-fixed reference through frozen
     # spans settled on at least one side; unbridgeable spans keep the
     # constant hold (no new failure mode)
     bridged, n_b, n_u = bridge_spans(t, gyro, accel, spans, R,
-                                     axis_map, dt)
+                                     axis_map, dt, cycles=_cycles)
     for a, b in spans:
         G = bridged.get((a, b))
         if G is not None:
