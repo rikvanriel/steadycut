@@ -93,7 +93,7 @@ def attitude(gyro, accel, dt: float, axis_map=None) -> Attitude:
         g_col, g_sign = axis_map.yaw
     gyr = np.radians(np.column_stack((p_sign * gyro[:, p_col],
                                       r_sign * gyro[:, r_col],
-                                      g_sign * accel[:, g_col])))
+                                      g_sign * gyro[:, g_col])))
     a = np.column_stack((p_sign * accel[:, p_col],
                          r_sign * accel[:, r_col],
                          g_sign * accel[:, g_col]))
