@@ -109,13 +109,18 @@ def _best_anchor(score, edge, side, dt, n):
     return best, bq
 
 
-def bridge_spans(t, gyr, acc, spans, R, axis_map, dt, cycles=()):
+def bridge_spans(t, gyr, acc, spans, R, axis_map, dt, flips=()):
     """Gyro-carry the world-fixed up reference through frozen spans.
-    carry; else post: backward carry), integrate body rate through,
-    and blend carried vs fresh VQF over 2 s on re-anchor. Returns
-    (synth_accel or None per span, n_bridged, n_unbridged).
-    Unbridgeable spans (neither side settled) keep the old constant
-    hold — no new failure mode.
+
+    Anchors at turn-transition FLIPS (yaw sign changes): lateral-g
+    passes through zero there, so median measured accel over +-0.3 s
+    is true gravity with no VQF attitude in the path. (Anchoring via
+    R[c].T @ g_world inherits VQF's local tilt error ~10-17 deg under
+    sustained lateral: VQF absorbs lateral as gravity.) Each sliver
+    carries forward from its pre-flip and backward from its post-flip,
+    cross-faded (traverse with known endpoints). One flip: one-way
+    carry. No flip: innov-anchor fallback. Returns (synth, n_b, n_u).
+    Unbridgeable spans keep the old constant hold.
     """
     (p_col, p_sign), (r_col, r_sign), (g_col,
                                        g_sign) = _handed_signs(axis_map)
@@ -125,10 +130,7 @@ def bridge_spans(t, gyr, acc, spans, R, axis_map, dt, cycles=()):
     wb = np.column_stack([s * w[:, c] for c, s in body_of])
     yaw_w = wb[:, 2]
     # per-sample VQF innovation: angle between VQF body-up and measured
-    # accel (up-positive frame). Low = VQF converged = safe anchor, even
-    # under slow rotation that a stillness test would veto. Anchoring on
-    # stillness fails wherever the head never sits still (measured: no
-    # 1 s window under 6 deg/s anywhere near the Jan26 turn).
+    # accel (up-positive frame). Only used for the no-flip fallback.
     acc_vqf = np.column_stack([s * np.asarray(acc, float)[:, c]
                                for c, s in body_of])
     an = np.linalg.norm(acc_vqf, axis=1, keepdims=True)
@@ -136,6 +138,15 @@ def bridge_spans(t, gyr, acc, spans, R, axis_map, dt, cycles=()):
     innov = np.degrees(np.arccos(np.clip(
         (up_v * (acc_vqf / np.maximum(an, 1e-12))).sum(axis=1),
         -1.0, 1.0)))
+    au = acc_vqf / np.maximum(an, 1e-12)
+
+    def _flip_up(k):
+        hw = max(1, int(round(0.3 / dt)))
+        lo, hi = max(0, k - hw), min(len(t), k + hw)
+        m = np.median(au[lo:hi], axis=0)
+        n = float(np.linalg.norm(m))
+        return m / n if n > 1e-12 else np.array([0.0, 0.0, 1.0])
+
     synth = {}
     n_b = n_u = 0
     n = len(t)
@@ -146,29 +157,32 @@ def bridge_spans(t, gyr, acc, spans, R, axis_map, dt, cycles=()):
         if (b + 1 - a) * dt > 20.0:
             n_u += 1
             continue
-        # in-cycle span: inherit the cycle's world gravity (L+R lateral
-        # cancelled over the full cycle) instead of the lowest-
-        # innovation second (VQF absorbs sustained lateral as gravity;
-        # agreement then lies). Anchor at the span's own lowest-
-        # innovation instant (VQF best-converged there), carry from it.
-        g_world = None
-        for a0, b0, gw in cycles:
-            if a >= a0 - int(round(5.0 / dt)) and \
-                    b <= b0 + int(round(5.0 / dt)):
-                g_world = gw
-                break
-        if g_world is not None:
-            c = a + int(np.argmin(innov[a:b + 1]))
-            u_c = R[c].T @ g_world
-            u_c = u_c / max(float(np.linalg.norm(u_c)), 1e-12)
-            seg_f = np.arange(c, b + 1)
-            seg_b = np.arange(a, c + 1)
-            Uf = _carry_up(u_c, wb[seg_f], np.gradient(t[seg_f]), +1)
-            Ub = _carry_up(u_c, wb[seg_b], np.gradient(t[seg_b]), -1)
-            U = np.zeros((b + 1 - a, 3))
-            U[c - a:] = Uf
-            if c - a > 0:
-                U[:c - a] = Ub[:c - a]
+        _fa = [f for f in flips if f <= a
+                 and a - f < int(round(5.0 / dt))]
+        _fb = [f for f in flips if f >= b
+                 and f - b < int(round(5.0 / dt))]
+        fa = max(_fa) if _fa else None
+        fb = min(_fb) if _fb else None
+        if fa is not None or fb is not None:
+            U1 = U2 = None
+            if fa is not None:
+                seg = np.arange(fa, b + 1)
+                full = _carry_up(_flip_up(fa), wb[seg],
+                                 np.gradient(t[seg]), +1)
+                U1 = full[a - fa:]
+            if fb is not None:
+                seg = np.arange(a, fb + 1)
+                full = _carry_up(_flip_up(fb), wb[seg],
+                                 np.gradient(t[seg]), -1)
+                U2 = full[:b + 1 - a]
+            if U1 is not None and U2 is not None:
+                wgt = np.linspace(0, 1, b + 1 - a)[:, None]
+                U = (1 - wgt) * U1 + wgt * U2
+            else:
+                U = U1 if U1 is not None else U2
+            assert U is not None
+            U = U / np.maximum(
+                np.linalg.norm(U, axis=1, keepdims=True), 1e-12)
             G = np.zeros((b + 1 - a, 3))
             for i, (cc, s) in enumerate(body_of):
                 G[:, cc] = s * (9.81 * U[:, i])
@@ -334,6 +348,7 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
                       / max(1, int(round(2.0 / dt))), mode="same")
     _w1 = max(1, int(round(1.0 / dt)))
     _split = []
+    _flips: list = []
     for a, b in spans:
         _cands = []
         for k in range(a + _w1, b - _w1 + 1):
@@ -342,38 +357,25 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
             if _lm > 6.0 and _rm < -6.0 or _lm < -6.0 and _rm > 6.0:
                 _cands.append((k, abs(_lm) + abs(_rm)))
         # non-maximum suppression (>=3 s apart): one cut per flip,
-        # strongest opposition wins; whip flicker never qualifies
+        # strongest opposition wins; whip flicker never qualifies.
+        # Cuts double as zero-lateral anchor instants (flip = edge
+        # change, lateral passes through zero) for bridge_spans.
         _cands.sort(key=lambda c: -c[1])
         _cuts = [a]
         for k, _ in _cands:
             if all(abs(k - c) > 3 * _w1 for c in _cuts) and k - a > _w1:
                 _cuts.append(k)
         _cuts = sorted(_cuts) + [b + 1]
+        _flips.extend(_cuts[1:-1])
         for s0, s1 in zip(_cuts[:-1], _cuts[1:]):
             if s1 - 1 >= s0:
                 _split.append((s0, s1 - 1))
     spans = _split
-    # slalom cycles on the UNSPLIT mega-spans: net-zero heading with
-    # high total rotation means L+R lateral cancels — mean world-frame
-    # gravity over the cycle is true vertical even though VQF's
-    # per-sample attitude under sustained lateral is biased. Slivers
-    # inherit their cycle's gravity (short carries, robust anchor).
-    _cycles = []
-    for a, b in _mega:
-        seg_yaw = yaw_w[a:b + 1] * dt  # yaw_w is already deg/s
-        if abs(float(seg_yaw.sum())) < 30.0 and \
-                float(np.abs(seg_yaw).sum()) > 120.0:
-            acc_u = acc_vqf_all / np.maximum(
-                np.linalg.norm(acc_vqf_all, axis=1, keepdims=True), 1e-12)
-            gw = (R[a:b + 1] @ acc_u[a:b + 1][..., None]
-                  ).mean(axis=0).ravel()
-            gw = gw / max(float(np.linalg.norm(gw)), 1e-12)
-            _cycles.append((a, b, gw))
-    # anchor-bridge: gyro-carry the world-fixed reference through frozen
-    # spans settled on at least one side; unbridgeable spans keep the
-    # constant hold (no new failure mode)
+    # anchor-bridge: gyro-carry the world-fixed up through frozen
+    # spans, anchored at flip instants (bridge_spans docstring);
+    # unbridgeable spans keep the constant hold (no new failure mode)
     bridged, n_b, n_u = bridge_spans(t, gyro, accel, spans, R,
-                                     axis_map, dt, cycles=_cycles)
+                                     axis_map, dt, flips=_flips)
     for a, b in spans:
         G = bridged.get((a, b))
         if G is not None:

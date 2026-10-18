@@ -179,9 +179,9 @@ def test_slalom_cycle_cancels_lateral():
         for u in up_body])
     mid = slice(n_c, n_c + 2 * n_t)
     err = float(np.median(np.abs(s[mid] - true[mid])))
-    # cycle inheritance cuts the lateral-tilt error (~17 deg per leg)
-    # to ~10 deg; the rest is VQF-attitude bias at the anchor instant
-    assert err < 12.0, (err, info)
+    # flip anchors cut the lateral-tilt error (~17 deg per leg) to
+    # ~6 deg; the rest is gyro-carry drift plus flip-instant transients
+    assert err < 8.0, (err, info)
 
 
 def test_up_convention_matches_static():
