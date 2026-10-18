@@ -84,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "mount-travel offset: positive turns right). "
                          "Measured per recording by the mount calibration; "
                          "pass it here until the registry carries it.")
+    ap.add_argument("--level-vqf", action="store_true",
+                    help="time-varying roll leveling from offlineVQF "
+                         "(gravity-leveling rev2: VQF-predicted body "
+                         "gravity through the settled static formula, "
+                         "innovation-frozen through turns).")
     ap.add_argument("--yaw-bias-track", default=None, metavar="JSON",
                     help="time-varying yaw bias [[t, deg], ...], lerped: "
                          "FOE-measured travel-in-lens anchors for windows "
@@ -486,6 +491,27 @@ def main(argv=None) -> int:
                    for p in pts]
             cert["yaw_bias_deg"] = a.yaw_bias
             print(f"CLI| yaw bias {a.yaw_bias:+.1f}deg (mount-travel)")
+        if a.level_vqf:
+            import dataclasses
+            from steadycut.ingest.telemetry import read_telemetry as _rt
+            from steadycut.stabilization import vqf_level as _vl
+            imu = _rt(str(spec.source), profile=spec.profile)
+            am = (spec.profile.axis_map
+                  if spec.profile is not None else None)
+            m = ((imu.time_s >= spec.start) &
+                 (imu.time_s < spec.start + spec.duration))
+            sh, li = _vl.level_shifts(imu.time_s[m], imu.gyro[m],
+                                      imu.accel[m], am)
+            # resample per-sample shifts onto the path timestamps
+            import numpy as _np
+            pt = _np.array([p.t for p in pts])
+            dl = _np.interp(pt, imu.time_s[m], sh,
+                            left=sh[0], right=sh[-1])
+            pts = [dataclasses.replace(p, roll=float(p.roll) + float(d))
+                   for p, d in zip(pts, dl)]
+            cert["level_vqf"] = {k: round(v, 3) for k, v in li.items()}
+            print(f"CLI| vqf level p95 {li['shift_p95']:+.1f}deg "
+                  f"turn_frac {li['turn_frac']:.2f}")
         if a.yaw_bias_track:
             import dataclasses
             anchors = sorted(json.load(open(a.yaw_bias_track)),
