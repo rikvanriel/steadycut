@@ -525,7 +525,7 @@ def main(argv=None) -> int:
                                          spec.start)
                 pts = [dataclasses.replace(
                     p, roll=float(p.roll) + float(d),
-                    pitch=(float(p.pitch) + float(q)
+                    pitch=(float(q)
                            if a.pitch_aim is None else float(p.pitch)))
                        for p, d, q in zip(pts, dl, dp)]
                 cert["level_vqf"] = {k: round(v, 3) for k, v in li.items()}
