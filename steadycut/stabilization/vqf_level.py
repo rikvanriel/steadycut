@@ -292,6 +292,33 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
             j += 1
         spans.append((i, j))
         i = j + 1
+    # split spans at genuine direction flips (slalom legs): a span
+    # covering L-then-R would merge into one long carry that trips the
+    # 20 s cap. Cut where 1 s means on both sides disagree in sign and
+    # both clear 6 deg/s (whip flicker near zero never cuts).
+    _sm = np.convolve(yaw_w, np.ones(max(1, int(round(2.0 / dt))))
+                      / max(1, int(round(2.0 / dt))), mode="same")
+    _w1 = max(1, int(round(1.0 / dt)))
+    _split = []
+    for a, b in spans:
+        _cands = []
+        for k in range(a + _w1, b - _w1 + 1):
+            _lm = _sm[k - _w1:k].mean()
+            _rm = _sm[k:k + _w1].mean()
+            if _lm > 6.0 and _rm < -6.0 or _lm < -6.0 and _rm > 6.0:
+                _cands.append((k, abs(_lm) + abs(_rm)))
+        # non-maximum suppression (>=3 s apart): one cut per flip,
+        # strongest opposition wins; whip flicker never qualifies
+        _cands.sort(key=lambda c: -c[1])
+        _cuts = [a]
+        for k, _ in _cands:
+            if all(abs(k - c) > 3 * _w1 for c in _cuts) and k - a > _w1:
+                _cuts.append(k)
+        _cuts = sorted(_cuts) + [b + 1]
+        for s0, s1 in zip(_cuts[:-1], _cuts[1:]):
+            if s1 - 1 >= s0:
+                _split.append((s0, s1 - 1))
+    spans = _split
     # anchor-bridge: gyro-carry the world-fixed reference through frozen
     # spans settled on at least one side; unbridgeable spans keep the
     # constant hold (no new failure mode)
@@ -301,14 +328,16 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
         G = bridged.get((a, b))
         if G is not None:
             # gyro-carried world reference through the turn: per-sample
-            # shifts from the carried up-vector via the settled formula
-            for k, gv in enumerate(G):
-                shifts[a + k] = shift_from_gravity(gv, axis_map)
-            m = min(n - b - 1, int(round(2.0 / dt)))
-            if m > 1 and b + 1 < n:
-                wgt = 0.5 - 0.5 * np.cos(np.pi * np.arange(m) / m)
-                shifts[b + 1:b + 1 + m] = ((1 - wgt) * shifts[b]
-                                           + wgt * raw[b + 1:b + 1 + m])
+            # shifts from the carried up-vector via the settled formula.
+            # Start-blend from the previous final value (whatever wrote
+            # it: raw, hold, or the last span's carry) so adjacent
+            # spans join continuously instead of jumping raw->carried.
+            car = np.array([shift_from_gravity(gv, axis_map) for gv in G])
+            m0 = min(a, int(round(2.0 / dt)), len(car))
+            if m0 > 1 and a > 0:
+                wgt = 0.5 - 0.5 * np.cos(np.pi * np.arange(m0) / m0)
+                car[:m0] = (1 - wgt) * shifts[a - 1] + wgt * car[:m0]
+            shifts[a:b + 1] = car
             continue
         # unbridgeable (no settled anchor either side): constant hold
         lo = max(0, a - int(round(1.0 / dt)))
