@@ -312,10 +312,6 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
                                          (g_col, g_sign)]])
     yaw_w = _wb[:, 2]
     back = int(round(2.5 / dt))
-    acc_vqf_all = np.column_stack(
-        [s * np.asarray(accel, float)[:, c]
-         for c, s in [(p_col, p_sign), (r_col, r_sign),
-                       (g_col, g_sign)]])
     turn_m = _O.turn_state(t, yaw_w, smooth_s=2.0)
     # dilate each contiguous span backward (entry coverage), offline luxury
     idx = np.flatnonzero(turn_m)
@@ -343,7 +339,6 @@ def level_shifts(t, gyro, accel, axis_map, sel=None):
     # covering L-then-R would merge into one long carry that trips the
     # 20 s cap. Cut where 1 s means on both sides disagree in sign and
     # both clear 6 deg/s (whip flicker near zero never cuts).
-    _mega = list(spans)
     _sm = np.convolve(yaw_w, np.ones(max(1, int(round(2.0 / dt))))
                       / max(1, int(round(2.0 / dt))), mode="same")
     _w1 = max(1, int(round(1.0 / dt)))
