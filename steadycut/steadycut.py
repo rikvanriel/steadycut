@@ -84,6 +84,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "mount-travel offset: positive turns right). "
                          "Measured per recording by the mount calibration; "
                          "pass it here until the registry carries it.")
+    ap.add_argument("--pitch-aim", type=float, default=None, metavar="DEG",
+                    help="absolute pitch aim: hold every pitch slot at DEG "
+                         "(world-fixed tripod with frozen yaw; shows ahead "
+                         "even when the head looks down the whole window).")
     ap.add_argument("--level-vqf", action="store_true",
                     help="time-varying roll leveling from offlineVQF "
                          "(gravity-leveling rev2: VQF-predicted body "
@@ -523,6 +527,12 @@ def main(argv=None) -> int:
                 cert["level_vqf"] = {k: round(v, 3) for k, v in li.items()}
                 print(f"CLI| vqf level p95 {li['shift_p95']:+.1f}deg "
                       f"turn_frac {li['turn_frac']:.2f}")
+        if a.pitch_aim is not None:
+            import dataclasses
+            pts = [dataclasses.replace(p, pitch=float(a.pitch_aim))
+                   for p in pts]
+            cert["pitch_aim_deg"] = a.pitch_aim
+            print(f"CLI| pitch aim {a.pitch_aim:+.1f}deg (absolute)")
         if a.yaw_bias_track:
             import dataclasses
             anchors = sorted(json.load(open(a.yaw_bias_track)),
