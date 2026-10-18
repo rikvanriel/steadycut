@@ -123,6 +123,67 @@ def test_bridge_spin_about_vertical():
     assert hold_err > 2 * err, (hold_err, err)
 
 
+def test_slalom_cycle_cancels_lateral():
+    # (f) two-leg slalom, yaw +-20 deg/s, lateral +-3 m/s^2 alternating
+    # with the legs, fixed 15-deg tilt, calm ends: VQF absorbs each
+    # leg's lateral as gravity (per-leg anchors lie), but the cycle
+    # mean cancels it. Shifts must track TRUE body-gravity (<6 deg);
+    # per-leg innov anchors fail by the lateral tilt (~17 deg).
+    dt = 0.01
+    n_c, n_t = 300, 1000
+    n = 2 * n_c + 2 * n_t
+    t = np.arange(n) * dt
+    yaw_rate = 20.0
+    psi = np.zeros(n)
+    psi[n_c:n_c + n_t] = np.radians(yaw_rate) * np.arange(n_t) * dt
+    psi[n_c + n_t:n_c + 2 * n_t] = (
+        np.radians(yaw_rate) * n_t * dt
+        - np.radians(yaw_rate) * np.arange(n_t) * dt)
+    tilt = np.radians(15.0)
+    Rx = np.array([[1, 0, 0], [0, np.cos(tilt), -np.sin(tilt)],
+                   [0, np.sin(tilt), np.cos(tilt)]])
+    up0 = Rx @ np.array([0.0, 0.0, 1.0])
+    up_body = np.array([[up0[0] * np.cos(p) + up0[1] * np.sin(p),
+                         -up0[0] * np.sin(p) + up0[1] * np.cos(p), up0[2]]
+                        for p in psi])
+    g = 9.81
+    lat = np.zeros(n)
+    lat[n_c:n_c + n_t] = 3.0
+    lat[n_c + n_t:n_c + 2 * n_t] = -3.0
+    # lateral along body-x (centripetal, alternating with the legs)
+    acc_body = g * up_body + np.column_stack(
+        [lat, np.zeros(n), np.zeros(n)])
+    w_body = np.zeros((n, 3))
+    dpsi = np.gradient(psi, dt)
+    for i in range(3):
+        w_body[:, i] = dpsi * up_body[:, i]
+    w_body[:n_c] = 0.0
+    w_body[n_c + 2 * n_t:] = 0.0
+    class Map:
+        yaw = (1, -1)
+        pitch = (2, -1)
+        roll = (0, -1)
+    gyro = np.zeros((n, 3))
+    accel = np.zeros((n, 3))
+    gyro[:, 2] = -np.degrees(w_body[:, 0])
+    gyro[:, 0] = -np.degrees(w_body[:, 1])
+    gyro[:, 1] = +np.degrees(w_body[:, 2])
+    accel[:, 2] = -acc_body[:, 0]
+    accel[:, 0] = -acc_body[:, 1]
+    accel[:, 1] = +acc_body[:, 2]
+    s, info = VL.level_shifts(t, gyro, accel, Map())
+    # truth: lateral-free gravity through the post-fix frame
+    # body = (-raw[2], -raw[0], +raw[1]) -> raw = (-b1, +b2, -b0)
+    true = np.array([shift_from_gravity(
+        np.array([-g * u[1], g * u[2], -g * u[0]]), Map())
+        for u in up_body])
+    mid = slice(n_c, n_c + 2 * n_t)
+    err = float(np.median(np.abs(s[mid] - true[mid])))
+    # cycle inheritance cuts the lateral-tilt error (~17 deg per leg)
+    # to ~10 deg; the rest is VQF-attitude bias at the anchor instant
+    assert err < 12.0, (err, info)
+
+
 def test_up_convention_matches_static():
     # (e) z-up pin: on calm tilted data the VQF-derived body-up must
     # agree with the static accel direction (validates _body_up_from_R
