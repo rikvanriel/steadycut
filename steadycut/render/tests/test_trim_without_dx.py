@@ -84,3 +84,25 @@ def test_wide_copy_stays_skipped():
     for s in cert["spans"]:
         assert s["action"] in ("warp+trim+patch", "skipped-needs-eye",
                                "trim-only")
+
+
+def test_detailed_threading_zero_behavior_change():
+    # A1: detailed spans carry mutual/fwd/tx/disp/support; plain rects
+    # identical to before (existing tests cover the behavior).
+    import numpy as np
+    from steadycut.render.dup_trim import (Span, find_duplicates,
+                                           find_duplicates_detailed)
+    rng = np.random.default_rng(13)
+    A = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
+    B = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
+    B[100:160, 490:570] = A[100:160, 446:526]
+    plain = find_duplicates(A, B, seams=(512,))
+    spans = find_duplicates_detailed(A, B, seams=(512,))
+    assert [tuple(s[:4]) for s in spans] == [tuple(r) for r in plain]
+    assert all(isinstance(s, Span) and len(s) == 10 for s in spans)
+    s = spans[0]
+    assert s.mutual and s.fwd == 1.0 and s.disp == 44.0 and s.tx == 462
+    assert s.sup1 - s.sup0 >= s.x1 - s.x0  # support covers the clamp
+    # old-style unpack keeps working
+    y0, y1, x0, x1 = spans[0][:4]
+    assert (y1, x1) > (y0, x0)

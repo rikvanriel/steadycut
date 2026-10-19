@@ -19,6 +19,29 @@ peak-sharpness margin against runner-up.
 from __future__ import annotations
 
 import numpy as np
+from typing import NamedTuple
+
+
+class Span(NamedTuple):
+    """A detected duplicate span with its detection internals.
+
+    Rect-first: s[0:4] == (y0, y1, x0, x1), so every existing 4-tuple
+    unpacker keeps working. Extra fields: mutual (back-match gate),
+    fwd (forward NCC score), tx (A-side template x), disp (bx0-tx),
+    sup0/sup1 (copy-support columns: NCC matched-window union, SIFT
+    undilated keypoint hull). Merged mutual = AND (a forward-only
+    grown row must never corroborate via OR).
+    """
+    y0: int
+    y1: int
+    x0: int
+    x1: int
+    mutual: bool
+    fwd: float | None
+    tx: int
+    disp: float | None
+    sup0: int
+    sup1: int
 
 SEAMS = (512, 1536)
 HALFW = 100          # joint corridor half-width (validity clamp domain)
@@ -66,6 +89,30 @@ def find_duplicates(eqA, Bal, seams=SEAMS, halfw=HALFW,
     return _merge_rects(rects)
 
 
+def find_duplicates_detailed(eqA, Bal, seams=SEAMS, halfw=HALFW,
+                             fov_a=185.0, fov_b=183.5):
+    """find_duplicates with Span details (mutual, fwd, tx, disp,
+    support). Zero behavior change to detection itself; the merge
+    ANDs mutual across constituents. Callers needing rects keep
+    using find_duplicates."""
+    cv2 = __import__("cv2")
+    from steadycut.render.sphere_maps import joint_valid_strip
+    gA = _gray(eqA)
+    gB = _gray(Bal)
+    H, W = gA.shape
+    spans = []
+    for sx in seams:
+        x0s = max(0, sx - halfw)
+        jv = joint_valid_strip(sx, halfw, fov_a, fov_b, H, W)
+        for th, stride in ((TEMPLATE_H, ROW_STRIDE), (60, 10)):
+            for y0 in range(0, H - th, stride):
+                y1 = y0 + th
+                for tx in range(sx - SCAN_W, sx - TEMPLATE_W, stride):
+                    spans.extend(_scan_band(
+                        gA, gB, cv2, jv, sx, x0s, tx, y0, y1))
+    return _merge_spans(spans)
+
+
 def _scan_band(gA, gB, cv2, jv, sx, x0s, tx, y0, y1,
                dup_floor=DUP_SCORE, fwd_floor=DUP_SCORE_FWD,
                x_prior=None, x_tol=30):
@@ -98,8 +145,9 @@ def _scan_band(gA, gB, cv2, jv, sx, x0s, tx, y0, y1,
     sa = gA[y0:y1, sx - SCAN_W:sx + SCAN_W].astype(np.float32)
     rb = cv2.matchTemplate(sa, tb, cv2.TM_CCOEFF_NORMED)[0]
     j = int(rb.argmax())
+    back = float(rb[j])
     mutual = (abs((sx - SCAN_W + j) - tx) <= BACK_TOL
-              and float(rb[j]) >= dup_floor)
+              and back >= dup_floor)
     if not mutual and best < fwd_floor:
         return []
     # clamp to the joint: trimming B where only B covers would
@@ -122,6 +170,7 @@ def _scan_band(gA, gB, cv2, jv, sx, x0s, tx, y0, y1,
             runs.append((rs, re)); rs, re = v, v
     runs.append((rs, re))
     base = max(0, bx0 - x0s)
+    disp = float(bx0 - tx)
     for rs, re in runs:
         if re + 1 - rs < 16:
             continue
@@ -132,7 +181,8 @@ def _scan_band(gA, gB, cv2, jv, sx, x0s, tx, y0, y1,
         ys = np.where(rows_ok)[0]
         if len(ys) < 20:
             continue
-        found.append((y0 + int(ys[0]), y0 + int(ys[-1]) + 1, ax0, ax1))
+        found.append(Span(y0 + int(ys[0]), y0 + int(ys[-1]) + 1, ax0,
+                          ax1, mutual, best, tx, disp, bx0, bx1))
     return found
 
 
@@ -175,8 +225,12 @@ def find_duplicates_sift(eqA, eqB, seams=SEAMS, y_lo=0, y_hi=1024,
                     continue
                 xs = [p[0] for p in g]
                 ys = [p[1] for p in g]
-                x0, x1 = int(min(xs)) - dilate, int(max(xs)) + dilate
-                y0, y1 = int(min(ys)) - dilate, int(max(ys)) + dilate
+                # undilated keypoint hull = copy support (dilate=16 adds
+                # 32 px; gates consume the hull, not the grown rect).
+                hx0, hx1 = int(min(xs)), int(max(xs))
+                hy0, hy1 = int(min(ys)), int(max(ys))
+                x0, x1 = hx0 - dilate, hx1 + dilate
+                y0, y1 = hy0 - dilate, hy1 + dilate
                 # joint clamp (union preserved)
                 cols = slice(max(0, x0 - x0s), min(jv.shape[1], x1 - x0s))
                 sub = jv[max(0, y0):min(H, y1), cols]
@@ -224,19 +278,30 @@ def _sift_band(sift, cv2, gA, gB, sx, by0, by1,
 
 def _merge_rects(rects):
     """Merge x-overlapping, row-adjacent rects (copies span bands)."""
-    if not rects:
+    spans = [r if isinstance(r, Span) else Span(*r, False, None, 0, None,
+                                                r[2], r[3]) for r in rects]
+    return [tuple(s[:4]) for s in _merge_spans(spans)]
+
+
+def _merge_spans(spans):
+    """Merge Spans: rect union as _merge_rects, mutual ANDed (a
+    forward-only grown row must never corroborate via OR), support
+    unioned, tx/disp kept from the max-fwd constituent."""
+    if not spans:
         return []
-    rs = sorted(rects)
-    out = [list(rs[0])]
-    for y0, y1, x0, x1 in rs[1:]:
+    rs = sorted(spans)
+    out = [rs[0]]
+    for s in rs[1:]:
         p = out[-1]
-        if y0 <= p[1] + ROW_STRIDE and x0 <= p[3] and x1 >= p[2]:
-            p[1] = max(p[1], y1)
-            p[2] = min(p[2], x0)
-            p[3] = max(p[3], x1)
+        if s.y0 <= p.y1 + ROW_STRIDE and s.x0 <= p.x1 and s.x1 >= p.x0:
+            f = s if (s.fwd or 0) >= (p.fwd or 0) else p
+            out[-1] = Span(min(p.y0, s.y0), max(p.y1, s.y1),
+                           min(p.x0, s.x0), max(p.x1, s.x1),
+                           p.mutual and s.mutual, f.fwd, f.tx, f.disp,
+                           min(p.sup0, s.sup0), max(p.sup1, s.sup1))
         else:
-            out.append([y0, y1, x0, x1])
-    return [tuple(r) for r in out]
+            out.append(s)
+    return out
 
 
 def apply_trim(weight, rects, feather=FEATHER):
