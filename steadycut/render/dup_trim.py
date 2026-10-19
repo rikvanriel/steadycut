@@ -42,6 +42,7 @@ class Span(NamedTuple):
     disp: float | None
     sup0: int
     sup1: int
+    disps: tuple = ()
 
 SEAMS = (512, 1536)
 HALFW = 100          # joint corridor half-width (validity clamp domain)
@@ -195,7 +196,8 @@ def _scan_band(gA, gB, cv2, jv, sx, x0s, tx, y0, y1,
         if len(ys) < 20:
             continue
         found.append(Span(y0 + int(ys[0]), y0 + int(ys[-1]) + 1, ax0,
-                          ax1, mutual, best, tx, disp, sup[0], sup[1]))
+                          ax1, mutual, best, tx, disp, sup[0], sup[1],
+                          (disp,)))
     return found
 
 
@@ -292,14 +294,16 @@ def _sift_band(sift, cv2, gA, gB, sx, by0, by1,
 def _merge_rects(rects):
     """Merge x-overlapping, row-adjacent rects (copies span bands)."""
     spans = [r if isinstance(r, Span) else Span(*r, False, None, 0, None,
-                                                r[2], r[3]) for r in rects]
+                                                r[2], r[3], ()) for r in rects]
     return [tuple(s[:4]) for s in _merge_spans(spans)]
 
 
 def _merge_spans(spans):
     """Merge Spans: rect union as _merge_rects, mutual ANDed (a
     forward-only grown row must never corroborate via OR), support
-    unioned, tx/disp kept from the max-fwd constituent."""
+    unioned, disps unioned (MAD over one value passes vacuously —
+    the union is what W1(c) consumes), tx/disp kept from the
+    max-fwd constituent."""
     if not spans:
         return []
     rs = sorted(spans)
@@ -311,7 +315,8 @@ def _merge_spans(spans):
             out[-1] = Span(min(p.y0, s.y0), max(p.y1, s.y1),
                            min(p.x0, s.x0), max(p.x1, s.x1),
                            p.mutual and s.mutual, f.fwd, f.tx, f.disp,
-                           min(p.sup0, s.sup0), max(p.sup1, s.sup1))
+                           min(p.sup0, s.sup0), max(p.sup1, s.sup1),
+                           tuple(sorted(set(p.disps) | set(s.disps))))
         else:
             out.append(s)
     return out
@@ -385,6 +390,61 @@ def count_instances(lensA_img, lensB_img, tx, bx0, bx1, rows):
         # whole support, not one edge (else halves pass as double).
         return na, nb, "double", conf
     return na, nb, "pair", conf
+
+
+def warp_consistency(eqA, eqB, span, sx, uniq_min=0.15, mad_max=3.0,
+                      flow_tol=5.0):
+    """W1: is detection disp trustworthy for warp? Four independent
+    signals the detector did not optimise, ANDed; first failure
+    returns its gate name, else None.
+    (a) uniqueness: NCC peak minus runner-up (excl +-8px) >= uniq_min
+    (b) repetition: count_instances on lens A alone over the span
+    window; na >= 2 refuses (window is disp+32px wide already)
+    (c) disp spread: MAD over span.disps <= mad_max
+    (d) flow vote: corridor_flow.block_flow median in span rows must
+    not disagree beyond flow_tol (abstains when no confident blocks)
+    """
+    cv2 = __import__("cv2")
+    gA = _gray(np.asarray(eqA)).astype(np.float32)
+    gB = _gray(np.asarray(eqB)).astype(np.float32)
+    y0, y1 = int(span.y0), int(span.y1)
+    t = gA[y0:y1, span.tx:span.tx + TEMPLATE_W]
+    s = gB[y0:y1, sx - SCAN_W:sx + SCAN_W]
+    r = cv2.matchTemplate(s, t, cv2.TM_CCOEFF_NORMED)[0]
+    i = int(r.argmax())
+    best = float(r[i])
+    # claimed disp must BE the match peak (an alias-wrong disp
+    # re-matches to the true peak here, and the disagreement refuses).
+    if abs((sx - SCAN_W + i) - (span.tx + float(span.disp or 0))) > 8:
+        return "disp-mismatch"
+    mask = np.ones_like(r, bool)
+    mask[max(0, i - 8):i + 9] = False
+    if best - float(r[mask].max()) < uniq_min:
+        return "uniqueness"
+    naA, _, _, _ = count_instances(eqA, eqA, span.tx,
+                                   span.tx + int(span.disp or 0),
+                                   span.sup1, range(y0, y1))
+    if naA >= 2:
+        return "repetition"
+    disps = np.asarray(span.disps if span.disps else [span.disp],
+                       float)
+    if float(np.median(np.abs(disps - np.median(disps)))) > mad_max:
+        return "disp-spread"
+    try:
+        from steadycut.render.corridor_flow import block_flow
+        H = np.asarray(eqA).shape[0]
+        ry0, ry1 = max(0, y0 - 100), min(H, y1 + 100)
+        flow, conf = block_flow(np.asarray(eqA)[ry0:ry1],
+                                np.asarray(eqB)[ry0:ry1])
+        sel = np.asarray(flow[y0 - ry0:y1 - ry0, :, 0], float)[np.asarray(
+            conf[y0 - ry0:y1 - ry0], float) > 0]
+        if sel.size and abs(float(np.median(sel)) - float(span.disp)) \
+                > flow_tol:
+            return "flow-disagree"
+    except Exception:
+        pass  # flow abstains: never passes by itself, never vetoes
+    # blind either
+    return None
 
 
 def apply_trim(weight, rects, feather=FEATHER):

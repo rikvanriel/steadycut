@@ -687,6 +687,35 @@ def auto_repair(eqA, eqB, wgt, fov_a=185.0, fov_b=183.5,
                             ]) or y0 < lat_lo or y1 > lat_hi:
                         refused = "gate4-extent-latitude"
         if refused is not None:
+            # W2: gate-1 refusals (copy wider than joint) fall through
+            # to the NCC-disp warp branch: trim would chop, but warp
+            # moves the copy. warp_consistency (W1) must pass ANDed,
+            # plus branch-local gate 1w (residual support outside
+            # joint+feather within taper budget; edge step is covered
+            # by the runtime post-trim gate).
+            if refused == "gate1-in-joint-frac" and det is not None \
+                    and det.mutual and det.disp:
+                from steadycut.render.dup_trim import warp_consistency
+                w1 = warp_consistency(eqA, eqB, det, sx)
+                if w1 is None:
+                    jv2 = joint_valid_strip(sx, 100, fov_a, fov_b, H, W)
+                    ry0, ry1 = max(0, y0), min(H, y1)
+                    jwidths = [int(jv2[yy].sum())
+                               for yy in range(ry0, ry1)]
+                    resid = (det.sup1 - det.sup0) - int(np.median(
+                        jwidths)) if jwidths else det.sup1 - det.sup0
+                    if resid <= 32:
+                        fixed.append((rect, float(det.disp), sx))
+                        cert["spans"].append({
+                            "rect": [int(v) for v in rect],
+                            "dx": float(det.disp), "votes": int(n),
+                            "action": "warp+trim+patch",
+                            "dx_source": "ncc-disp",
+                            "gate_refused": None, "seam": sx})
+                        continue
+                    refused = "gate1w-residual"
+                else:
+                    refused = "w1-" + w1
             cert["spans"].append({"rect": [int(v) for v in rect],
                                   "dx": None, "votes": int(n),
                                   "action": "skipped-needs-eye",

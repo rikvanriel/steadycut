@@ -99,7 +99,7 @@ def test_detailed_threading_zero_behavior_change():
     plain = find_duplicates(A, B, seams=(512,))
     spans = find_duplicates_detailed(A, B, seams=(512,))
     assert [tuple(s[:4]) for s in spans] == [tuple(r) for r in plain]
-    assert all(isinstance(s, Span) and len(s) == 10 for s in spans)
+    assert all(isinstance(s, Span) and len(s) == 11 for s in spans)
     s = spans[0]
     assert s.mutual and s.fwd == 1.0 and s.disp == 44.0 and s.tx == 462
     assert s.sup1 - s.sup0 >= s.x1 - s.x0  # support covers the clamp
@@ -179,14 +179,12 @@ def test_gates_refuse_everything_bad():
         assert s.get("gate_refused"), s
 
 
-def test_real_tree_span_refuses_gate1_by_name():
-    # Fails-old-passes-new, inverted honestly: the real tree-crown
-    # copy (35px support) is wider than the local joint (26px), so
-    # trim-only MUST refuse (trimming would chop the trunk into a
-    # 49px step at the joint edge). Old code refused silently as
-    # skipped-needs-eye; new code names gate1-in-joint-frac. The
-    # double itself falls to the warp path once dx is measurable
-    # (explicit dx=49 warp eye-verified: two distinct trees, sky
+def test_real_tree_span_warps_via_ncc_disp():
+    # Fails-old-passes-new (W2): the real tree-crown copy is wider
+    # than the joint, so trim-only refuses — but W1 passes
+    # (margin 0.31, na 1, MAD 1.0) and gate 1w admits (resid 9px),
+    # so the span warps automatically with dx_source ncc-disp.
+    # (Explicit dx=49 warp eye-verified: two distinct trees, sky
     # between, no boundary chop — /tmp/seam512_warp49.png).
     import cv2
     import numpy as np
@@ -200,11 +198,62 @@ def test_real_tree_span_refuses_gate1_by_name():
     orig = N.span_displacement
     N.span_displacement = lambda *a, **k: (None, 3)
     try:
-        _, cert = N.auto_repair(A, B, wgt, seams=(512,))
+        M, cert = N.auto_repair(A, B, wgt, seams=(512,))
     finally:
         N.span_displacement = orig
     assert cert["spans"], "detection must fire on the real spans"
     tree = [s for s in cert["spans"] if s["rect"][0] < 200]
     assert tree, [s["rect"] for s in cert["spans"]]
-    assert tree[0]["action"] == "skipped-needs-eye"
-    assert tree[0]["gate_refused"] == "gate1-in-joint-frac", tree[0]
+    assert tree[0]["action"] == "warp+trim+patch", tree[0]
+    assert tree[0].get("dx_source") == "ncc-disp", tree[0]
+    assert M is not None
+
+
+def test_merged_span_carries_all_disps():
+    # D2: MAD over a single disp passes vacuously; the merge must
+    # union constituents so W1(c) sees real spread. Two templates
+    # with disps a period apart must surface both.
+    from steadycut.render.dup_trim import Span, _merge_spans
+    a = Span(100, 160, 506, 522, True, 0.95, 462, 44.0, 506, 538,
+             (44.0,))
+    b = Span(100, 160, 508, 524, True, 0.90, 460, 64.0, 508, 540,
+             (64.0,))
+    (m,) = _merge_spans([a, b])
+    assert set(m.disps) == {44.0, 64.0}, m.disps
+    assert m.mutual and m.disp == 44.0  # max-fwd still wins
+
+
+def test_warp_consistency_fails_closed():
+    # W1: tree span passes all four; alias-wrong disp refused by
+    # name; period-equals-disp worst case refused; bars survive.
+    import cv2
+    import numpy as np
+    from steadycut.render.dup_trim import (find_duplicates_detailed,
+                                           warp_consistency,
+                                           count_instances)
+    A = cv2.imread("/tmp/equirects/eqA.png")
+    B = cv2.imread("/tmp/equirects/eqB.png")
+    assert A is not None
+    spans = find_duplicates_detailed(A, B, seams=(512,))
+    tree = [s for s in spans if s.y0 < 200][0]
+    assert warp_consistency(A, B, tree, 512) is None, \
+        warp_consistency(A, B, tree, 512)
+    alias = tree._replace(disp=tree.disp + 40.0,
+                          disps=tuple(d + 40.0 for d in tree.disps))
+    assert warp_consistency(A, B, alias, 512) in (
+        "disp-mismatch", "uniqueness", "disp-spread", "flow-disagree")
+    # period-equals-disp worst case: DISTINCT repeated bars (unique
+    # peaks, so (a) passes) at disp spacing -> repetition veto.
+    rng = np.random.default_rng(7)
+    C = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
+    D = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
+    C[100:160, 440:470] = 200
+    C[100:160, 490:520] = 60
+    D[100:160, 490:520] = 200
+    D[100:160, 540:570] = 60
+    from steadycut.render.dup_trim import Span
+    rep = Span(100, 160, 506, 536, True, 0.95, 440, 50.0, 490, 590,
+               (50.0,))
+    assert warp_consistency(C, D, rep, 512) == "repetition"
+    na, _, _, _ = count_instances(C, C, 440, 490, 590, range(100, 160))
+    assert na == 2  # every bar survives on the single-lens baseline
