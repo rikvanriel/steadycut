@@ -113,7 +113,7 @@ def test_command_file_ramps_between_control_points() -> None:
     # See build_command_file's docstring for the measurement.
     assert "[expr]" not in commands
     assert "lerp(" not in commands
-    lines = [l for l in commands.splitlines() if "v360 yaw" in l]
+    lines = [l for l in commands.splitlines() if "v360@view yaw" in l]
     assert len(lines) > 50                    # one per frame, ~30 fps over 2 s
     times = [float(l.split()[0]) for l in lines]
     vals = [float(l.split()[-1].rstrip(";")) for l in lines]
@@ -143,8 +143,8 @@ def test_lerp_delivery_remains_selectable() -> None:
 
 def test_single_control_point_is_static() -> None:
     commands = build_command_file([ControlPoint(t=0.0, yaw=30.0)])
-    assert "v360 yaw 30.0000" in commands
-    assert commands.count("v360 yaw") == 1
+    assert "v360@view yaw 30.0000" in commands
+    assert commands.count("v360@view yaw") == 1
 
 
 def test_empty_path_rejected() -> None:
