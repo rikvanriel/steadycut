@@ -141,11 +141,21 @@ def bridge_spans(t, gyr, acc, spans, R, axis_map, dt, flips=()):
     au = acc_vqf / np.maximum(an, 1e-12)
 
     def _flip_up(k):
-        hw = max(1, int(round(0.3 / dt)))
+        # narrow window + SYMMETRY gate: the flip must be a clean
+        # zero-crossing (1 s means on both sides disagree in sign,
+        # both clearing rate) so lateral cancels in the median. Rate
+        # through the instant is irrelevant — a fast clean crossing
+        # cancels, a slow muddy one does not. Returns (up, ok).
+        hw = max(1, int(round(0.15 / dt)))
         lo, hi = max(0, k - hw), min(len(t), k + hw)
         m = np.median(au[lo:hi], axis=0)
         n = float(np.linalg.norm(m))
-        return m / n if n > 1e-12 else np.array([0.0, 0.0, 1.0])
+        u = m / n if n > 1e-12 else np.array([0.0, 0.0, 1.0])
+        w1 = max(1, int(round(1.0 / dt)))
+        lm = float(np.degrees(yaw_w[max(0, k - w1):k]).mean())
+        rm = float(np.degrees(yaw_w[k:min(len(t), k + w1)]).mean())
+        ok = (lm > 6.0 and rm < -6.0) or (lm < -6.0 and rm > 6.0)
+        return u, ok
 
     synth = {}
     n_b = n_u = 0
@@ -164,31 +174,44 @@ def bridge_spans(t, gyr, acc, spans, R, axis_map, dt, flips=()):
         fa = max(_fa) if _fa else None
         fb = min(_fb) if _fb else None
         if fa is not None or fb is not None:
+            # symmetry gate lives inside _flip_up (clean zero-crossing
+            # cancels lateral in the median); no rate bar here.
             U1 = U2 = None
             if fa is not None:
-                seg = np.arange(fa, b + 1)
-                full = _carry_up(_flip_up(fa), wb[seg],
-                                 np.gradient(t[seg]), +1)
-                U1 = full[a - fa:]
+                ua, oka = _flip_up(fa)
+                if oka:
+                    seg = np.arange(fa, b + 1)
+                    full = _carry_up(ua, wb[seg],
+                                     np.gradient(t[seg]), +1)
+                    U1 = full[a - fa:]
             if fb is not None:
-                seg = np.arange(a, fb + 1)
-                full = _carry_up(_flip_up(fb), wb[seg],
-                                 np.gradient(t[seg]), -1)
-                U2 = full[:b + 1 - a]
-            if U1 is not None and U2 is not None:
-                wgt = np.linspace(0, 1, b + 1 - a)[:, None]
-                U = (1 - wgt) * U1 + wgt * U2
+                ub, okb = _flip_up(fb)
+                if okb:
+                    seg = np.arange(a, fb + 1)
+                    full = _carry_up(ub, wb[seg],
+                                     np.gradient(t[seg]), -1)
+                    U2 = full[:b + 1 - a]
+            if U1 is None and U2 is None:
+                # gate-rejected flips (muddy crossings): fall through
+                # to the innov-anchor path below instead of refusing —
+                # the gate working is not missing gravity. Only count
+                # unbridged when nothing anchors at all.
+                pass
             else:
-                U = U1 if U1 is not None else U2
-            assert U is not None
-            U = U / np.maximum(
-                np.linalg.norm(U, axis=1, keepdims=True), 1e-12)
-            G = np.zeros((b + 1 - a, 3))
-            for i, (cc, s) in enumerate(body_of):
-                G[:, cc] = s * (9.81 * U[:, i])
-            synth[(a, b)] = G
-            n_b += 1
-            continue
+                if U1 is not None and U2 is not None:
+                    wgt = np.linspace(0, 1, b + 1 - a)[:, None]
+                    U = (1 - wgt) * U1 + wgt * U2
+                else:
+                    U = U1 if U1 is not None else U2
+                assert U is not None
+                U = U / np.maximum(
+                    np.linalg.norm(U, axis=1, keepdims=True), 1e-12)
+                G = np.zeros((b + 1 - a, 3))
+                for i, (cc, s) in enumerate(body_of):
+                    G[:, cc] = s * (9.81 * U[:, i])
+                synth[(a, b)] = G
+                n_b += 1
+                continue
         # settled = gate-calm AND directly slow: the gate's entry delay
         # leaves the first second calm while already spinning, so an
         # anchor there would carry a corrupt reference (test b pin).
