@@ -60,20 +60,20 @@ def _local_double(dx=60, seed=13):
 
 
 def test_auto_repair_fires_on_shifted_pair():
+    # T1 FREEZE (serial-geometry fit plan): 44px auto-warps suspend
+    # until the correspondence fit lands — with current geometry the
+    # excess cannot be told from a two-person pair. Asserts refusal
+    # by name; revisit after the fit (budget will admit true doubles).
     from steadycut.render.nearfield import auto_repair
     A, B = _local_double()
     h, w = A.shape[:2]
     wgt = np.zeros((h, w), np.float32)
     wgt[:, 1536:] = 1.0
     M, cert = auto_repair(A, B, wgt)
-    fired = [s for s in cert["spans"] if s["action"] == "warp+trim+patch"]
-    assert fired, [s["action"] for s in cert["spans"]]
-    plain = (A.astype(float) * (1 - wgt[:, :, None])
-             + B.astype(float) * wgt[:, :, None])
-    zone = (slice(100, 160), slice(1500, 1600))
-    assert (np.abs(M[zone].astype(float) - A[zone].astype(float)).mean()
-            < np.abs(plain[zone].astype(float) - A[zone].astype(float)
-                     ).mean())
+    assert M is None
+    assert cert["spans"], "detection must still fire"
+    assert all(s["gate_refused"] == "dx-exceeds-parallax-budget"
+               for s in cert["spans"]), cert["spans"]
 
 
 
