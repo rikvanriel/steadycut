@@ -447,6 +447,23 @@ def warp_consistency(eqA, eqB, span, sx, uniq_min=0.15, mad_max=3.0,
     return None
 
 
+def parallax_budget(y0, y1, joint_w, h=1024, w=2048, h_min=0.5,
+                      near_limit=0.4, baseline=0.03):
+    """T1: max plausible |dx| at these rows. Ground plane below the
+    horizon (d_min = h_min/tan(-el)), near limit above it (overhead
+    branches can be close). Anything larger cannot be parallax —
+    refuse as dx-exceeds-parallax-budget. Can only refuse, never
+    admit: fails closed. Tuned: tree (49px, rows 90, jw 26) passes,
+    skier (60px, rows 650, jw 25) refuses."""
+    import math
+    el = (h / 2 - (y0 + y1) / 2) / h * math.pi  # + above horizon
+    if el > 0:
+        d_min = near_limit
+    else:
+        d_min = max(near_limit, h_min / max(0.05, math.tan(-el)))
+    return baseline * (w / (2 * math.pi)) / d_min + joint_w
+
+
 def apply_trim(weight, rects, feather=FEATHER):
     """weight: (H, W) float blend weight (1 = B). Zero B over trim rects
     with cosine-feathered edges. Returns the trimmed weight."""

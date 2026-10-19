@@ -613,6 +613,7 @@ def auto_repair(eqA, eqB, wgt, fov_a=185.0, fov_b=183.5,
     from steadycut.render.dup_trim import (Span, count_instances,
                                            find_duplicates_detailed,
                                            find_duplicates_sift,
+                                           parallax_budget,
                                            ramp_duplication)
     from steadycut.render.sphere_maps import joint_valid_strip
     H, W = np.asarray(eqA).shape[:2]
@@ -639,6 +640,20 @@ def auto_repair(eqA, eqB, wgt, fov_a=185.0, fov_b=183.5,
             det = None
         dx, n = span_displacement(eqA, eqB, rect)
         if dx is not None:
+            # T1 parallax-budget veto: can only refuse, never admit.
+            y0, y1 = int(rect[0]), int(rect[1])
+            jv0 = joint_valid_strip(sx, 100, fov_a, fov_b, H, W)
+            jw0 = int(np.median([jv0[yy].sum()
+                                 for yy in range(max(0, y0),
+                                                 min(H, y1))]))
+            if abs(dx) > parallax_budget(y0, y1, jw0, H, W):
+                cert["spans"].append({"rect": [int(v) for v in rect],
+                                      "dx": dx, "votes": int(n),
+                                      "action": "skipped-needs-eye",
+                                      "gate_refused":
+                                      "dx-exceeds-parallax-budget",
+                                      "seam": sx})
+                continue
             fixed.append((rect, dx, sx))
             cert["spans"].append({"rect": [int(v) for v in rect],
                                   "dx": dx, "votes": int(n),
@@ -696,15 +711,19 @@ def auto_repair(eqA, eqB, wgt, fov_a=185.0, fov_b=183.5,
             if refused == "gate1-in-joint-frac" and det is not None \
                     and det.mutual and det.disp:
                 from steadycut.render.dup_trim import warp_consistency
-                w1 = warp_consistency(eqA, eqB, det, sx)
-                if w1 is None:
+                w1 = warp_consistency(eqA, eqB, det, sx) or ""
+                if w1 == "":
                     jv2 = joint_valid_strip(sx, 100, fov_a, fov_b, H, W)
                     ry0, ry1 = max(0, y0), min(H, y1)
                     jwidths = [int(jv2[yy].sum())
                                for yy in range(ry0, ry1)]
-                    resid = (det.sup1 - det.sup0) - int(np.median(
-                        jwidths)) if jwidths else det.sup1 - det.sup0
-                    if resid <= 32:
+                    jw = int(np.median(jwidths)) if jwidths else 0
+                    if abs(float(det.disp)) > parallax_budget(
+                            y0, y1, jw, H, W):
+                        refused = "dx-exceeds-parallax-budget"
+                    elif (det.sup1 - det.sup0) - jw > 32:
+                        refused = "gate1w-residual"
+                    else:
                         fixed.append((rect, float(det.disp), sx))
                         cert["spans"].append({
                             "rect": [int(v) for v in rect],
@@ -713,8 +732,7 @@ def auto_repair(eqA, eqB, wgt, fov_a=185.0, fov_b=183.5,
                             "dx_source": "ncc-disp",
                             "gate_refused": None, "seam": sx})
                         continue
-                    refused = "gate1w-residual"
-                else:
+                if w1 != "":
                     refused = "w1-" + w1
             cert["spans"].append({"rect": [int(v) for v in rect],
                                   "dx": None, "votes": int(n),

@@ -257,3 +257,32 @@ def test_warp_consistency_fails_closed():
     assert warp_consistency(C, D, rep, 512) == "repetition"
     na, _, _, _ = count_instances(C, C, 440, 490, 590, range(100, 160))
     assert na == 2  # every bar survives on the single-lens baseline
+
+
+def test_parallax_budget_veto():
+    # T1: budget admits the eye-proven tree (49 <= 50.4), refuses a
+    # 60px dx at skier rows (budget 33.8). Integration: forced dx=60
+    # on the tree rect refuses by name (old code warps it).
+    import cv2
+    import numpy as np
+    import steadycut.render.nearfield as N
+    from steadycut.render.dup_trim import parallax_budget
+    assert parallax_budget(50, 130, 26) >= 49
+    assert parallax_budget(595, 705, 25) < 60
+    A = cv2.imread("/tmp/equirects/eqA.png")
+    B = cv2.imread("/tmp/equirects/eqB.png")
+    assert A is not None
+    h, w = A.shape[:2]
+    wgt = np.zeros((h, w), np.float32)
+    wgt[:, 512:] = 1.0
+    orig = N.span_displacement
+    N.span_displacement = lambda *a, **k: (200.0, 5)
+    try:
+        _, cert = N.auto_repair(A, B, wgt, seams=(512,))
+    finally:
+        N.span_displacement = orig
+    assert cert["spans"], "detection must fire"
+    assert all(s["action"] == "skipped-needs-eye"
+               and s["gate_refused"] == "dx-exceeds-parallax-budget"
+               for s in cert["spans"]), [(s["action"], s.get("gate_refused"))
+                                          for s in cert["spans"]]
