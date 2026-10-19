@@ -491,11 +491,15 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
 
 
 def lens_equirects(source, spec, gain, t, tmp, sphere_size=(2048, 1024),
-                   keep_dir=None):
+                   keep_dir=None, lens_centers=None):
     """Shared first half of sphere_still: per-lens extract, per-lens deflare,
     gain, rim, v360 to equirect. Returns (ea, eb) float32 BGR. tone_fields
     and sphere_still share it so video and stills correct identically.
-    keep_dir: when set, the per-lens equirects are kept there (eqA/eqB)."""
+    keep_dir: when set, the per-lens equirects are kept there (eqA/eqB).
+    lens_centers: optional ((cx0, cy0), (cx1, cy1)) image-circle centers
+    in lens-frame pixels; the frame is translated so the circle is
+    centered before v360 (which assumes a centered circle). None =
+    legacy unshifted behavior."""
     import numpy as np
     import subprocess
     cv2 = __import__("cv2")
@@ -508,6 +512,23 @@ def lens_equirects(source, spec, gain, t, tmp, sphere_size=(2048, 1024),
             shell=True, check=True, timeout=120)
     a = cv2.imread(f"{tmp}/lens0.png")
     b = cv2.imread(f"{tmp}/lens1.png")
+    if lens_centers is not None:
+        # center each image circle before v360 (which assumes a centered
+        # circle). Constant-black border, matching the verified probe;
+        # the rim band it touches is discarded by validity downstream.
+        ah, aw = a.shape[:2]
+        for idx, (img, (cx, cy)) in enumerate(
+                ((a, lens_centers[0]), (b, lens_centers[1]))):
+            M = np.array([[1, 0, aw / 2 - cx], [0, 1, ah / 2 - cy]],
+                         np.float32)
+            shifted = cv2.warpAffine(img, M, (aw, ah),
+                                     flags=cv2.INTER_LINEAR,
+                                     borderMode=cv2.BORDER_CONSTANT,
+                                     borderValue=0)
+            if idx == 0:
+                a = shifted
+            else:
+                b = shifted
     scl = spec.deflare_scale
     if scl is None:
         scl = measure_deflare_scale(source, spec.deflare_poly, t)
