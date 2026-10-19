@@ -14,7 +14,7 @@ def test_per_frame_absolute_commands_span_the_clip() -> None:
     txt = build_command_file(pts, fps=10.0)
     lines = txt.strip().splitlines()
     assert len(lines) == 21 * 4          # 21 frames x 4 channels
-    yaws = [line for line in lines if " v360 yaw " in line]
+    yaws = [line for line in lines if " v360@view yaw " in line]
     assert yaws[0].endswith(" yaw 0.0000;")
     assert yaws[-1].endswith(" yaw 10.0000;")
 
@@ -32,7 +32,7 @@ def test_negative_times_dropped_not_emitted() -> None:
 def test_single_point_emits_every_channel() -> None:
     txt = build_command_file([ControlPoint(t=0.0, yaw=3.0, fov=90.0)], fps=10.0)
     for channel in ("yaw", "pitch", "roll", "h_fov"):
-        assert f"v360 {channel} " in txt
+        assert f"v360@view {channel} " in txt
 
 
 def test_empty_path_refuses() -> None:

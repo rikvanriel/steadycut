@@ -35,7 +35,7 @@ def test_legacy_is_the_default_and_survives() -> None:
     fg = _filtergraph(geometry=X4.lens, stitch=StitchSpec(method="legacy"))
     assert fg.startswith("[0:v:1][0:v:0]hstack=inputs=2,")
     # sqrt(2) * 181.37, v360's diagonal convention, computed in resolve_input.
-    assert "v360=input=dfisheye:output=flat:id_fov=256.49591380760825:" in fg
+    assert "v360@view=input=dfisheye:output=flat:id_fov=256.49591380760825:" in fg
     assert "reset_rot=1" in fg
 
 
@@ -54,7 +54,7 @@ def test_single_lens_has_no_stack_stage() -> None:
                      stack_order="single")
     fg = _filtergraph(geometry=g)
     assert "hstack" not in fg
-    assert "v360=input=fisheye" in fg
+    assert "v360@view=input=fisheye" in fg
     assert f"id_fov={math.sqrt(2) * 150.0}" in fg
 
 

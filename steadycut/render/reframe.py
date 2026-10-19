@@ -181,10 +181,10 @@ def build_command_file(path: list[ControlPoint], per_frame: bool = True,
         only = points[0]
         yaw = (only.yaw + 180.0) % 360.0 - 180.0  # v360 range, see below
         return (
-            f"{only.t:.6f} v360 yaw {yaw:.4f};\n"
-            f"{only.t:.6f} v360 pitch {only.pitch:.4f};\n"
-            f"{only.t:.6f} v360 roll {only.roll:.4f};\n"
-            f"{only.t:.6f} v360 h_fov {only.fov:.4f};\n"
+            f"{only.t:.6f} v360@view yaw {yaw:.4f};\n"
+            f"{only.t:.6f} v360@view pitch {only.pitch:.4f};\n"
+            f"{only.t:.6f} v360@view roll {only.roll:.4f};\n"
+            f"{only.t:.6f} v360@view h_fov {only.fov:.4f};\n"
         )
 
     ts = np.array([p.t for p in points], dtype=float)
@@ -207,7 +207,7 @@ def build_command_file(path: list[ControlPoint], per_frame: bool = True,
                 vals = (np.degrees(interp) + 180.0) % 360.0 - 180.0
             else:
                 vals = np.interp(times, ts, vals)
-            lines.extend(f"{tt:.6f} v360 {name} {vv:.4f};" for tt, vv in zip(times, vals))
+            lines.extend(f"{tt:.6f} v360@view {name} {vv:.4f};" for tt, vv in zip(times, vals))
         return "\n".join(lines) + "\n"
 
     lines = []
@@ -221,7 +221,7 @@ def build_command_file(path: list[ControlPoint], per_frame: bool = True,
             ("roll", start.roll, end.roll),
             ("h_fov", start.fov, end.fov),
         ):
-            lines.append(f"{span} [expr] v360 {name} 'lerp({a:.4f},{b:.4f},TI)';")
+            lines.append(f"{span} [expr] v360@view {name} 'lerp({a:.4f},{b:.4f},TI)';")
     return "\n".join(lines) + "\n"
 
 
@@ -382,7 +382,7 @@ def render(
     # DIFFERENT values and v360 takes one, so some asymmetry remains.
     reproject = (
         f"sendcmd=f='{command_file}',"
-        f"v360=input={proj}:output=flat:id_fov={fov}"
+        f"v360@view=input={proj}:output=flat:id_fov={fov}"
         f":h_fov={first.fov}:v_fov={first.fov * height / width}"
         f":w={width}:h={height}"
         f":yaw={first.yaw}:pitch={first.pitch}:roll={first.roll}"
