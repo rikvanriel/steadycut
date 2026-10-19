@@ -106,3 +106,39 @@ def test_detailed_threading_zero_behavior_change():
     # old-style unpack keeps working
     y0, y1, x0, x1 = spans[0][:4]
     assert (y1, x1) > (y0, x0)
+
+
+def _bars(w=2048, h=256, seed=21):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    A = (rng.random((h, w, 3)) * 255).astype(np.uint8)
+    B = (rng.random((h, w, 3)) * 255).astype(np.uint8)
+    return A, B, rng
+
+
+def test_counter_double_pair_hole():
+    # A2: one bar per lens across the seam = double (1,1); two bars
+    # each side = pair (2,2); halves with bland middle = hole.
+    import numpy as np
+    from steadycut.render.dup_trim import count_instances
+    A, B, rng = _bars()
+    A[100:160, 470:500] = (200, 200, 200)
+    B[100:160, 520:550] = (200, 200, 200)
+    na, nb, kind, conf = count_instances(A, B, 470, 520, 550,
+                                         range(100, 160))
+    assert (na, nb) == (1, 1) and kind == "double", (na, nb, kind)
+    A2, B2, rng2 = _bars()
+    A2[100:160, 430:450] = (200, 200, 200)
+    A2[100:160, 480:500] = (60, 60, 60)
+    B2[100:160, 520:540] = (200, 200, 200)
+    B2[100:160, 560:580] = (60, 60, 60)
+    na, nb, kind, conf = count_instances(A2, B2, 430, 520, 580,
+                                         range(100, 160))
+    assert (na, nb) == (2, 2) and kind == "pair", (na, nb, kind)
+    A3 = np.full((256, 2048, 3), 127, np.uint8)
+    B3 = np.full((256, 2048, 3), 127, np.uint8)
+    A3[100:160, 440:470] = (200, 200, 200)  # left half only in A...
+    B3[100:160, 550:580] = (200, 200, 200)  # ...right half only in B
+    na, nb, kind, conf = count_instances(A3, B3, 440, 550, 580,
+                                         range(100, 160))
+    assert kind == "hole", (na, nb, kind)

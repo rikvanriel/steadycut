@@ -304,6 +304,76 @@ def _merge_spans(spans):
     return out
 
 
+def count_instances(lensA_img, lensB_img, tx, bx0, bx1, rows):
+    """Finding-25 instance count across the seam, both lenses.
+
+    Window spans tx..bx1 in BOTH lenses (not the clamped rect).
+    Counts content runs in the column-mean profile (a trunk/skier
+    reads as a level shift coherent down the rows; noise does not).
+    Hole test: middle columns bland in both lenses while outer
+    thirds carry content = halves with nothing in the middle
+    (naive counting reports (1,1) and would WRONGLY pass trim).
+    Returns (na, nb, kind, conf) with kind in double/pair/hole/skip;
+    low-confidence or bland-everywhere -> skip (abstention, never
+    condemnation).
+    """
+    cv2 = __import__("cv2")
+    A = np.asarray(lensA_img)
+    B = np.asarray(lensB_img)
+    A = cv2.cvtColor(A, cv2.COLOR_BGR2GRAY) if A.ndim == 3 else A
+    B = cv2.cvtColor(B, cv2.COLOR_BGR2GRAY) if B.ndim == 3 else B
+    rs = list(rows)
+    if not rs:
+        return 0, 0, "skip", 0.0
+    y0, y1 = max(0, min(rs)), min(A.shape[0], max(rs) + 1)
+    x0, x1 = max(0, tx), min(A.shape[1], bx1)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return 0, 0, "skip", 0.0
+
+    def runs(g):
+        prof = g[y0:y1, x0:x1].astype(np.float32).mean(axis=0)
+        bg = float(np.median(prof))
+        mad = float(np.median(np.abs(prof - bg))) + 1e-6
+        hot = np.abs(prof - bg) > 3 * mad
+        out, start = [], None
+        for i, v in enumerate(hot):
+            if v and start is None:
+                start = i
+            elif not v and start is not None:
+                if i - start >= 3:
+                    out.append((start, i))
+                start = None
+        if start is not None and len(hot) - start >= 3:
+            out.append((start, len(hot)))
+        strength = float(np.abs(prof - bg).max() / mad)
+        return out, strength
+
+    ra, ca = runs(A)
+    rb, cb = runs(B)
+    na, nb = len(ra), len(rb)
+    conf = min(1.0, (ca + cb) / 12.0)
+    # hole: middle third bland in both, outer thirds structured.
+    w3 = max(1, (x1 - x0) // 3)
+    midA = A[y0:y1, x0 + w3:x0 + 2 * w3]
+    midB = B[y0:y1, x0 + w3:x0 + 2 * w3]
+    outA = np.concatenate([A[y0:y1, x0:x0 + w3].ravel(),
+                           A[y0:y1, x0 + 2 * w3:x1].ravel()])
+    outB = np.concatenate([B[y0:y1, x0:x0 + w3].ravel(),
+                           B[y0:y1, x0 + 2 * w3:x1].ravel()])
+    if (float(midA.std()) < 8 and float(midB.std()) < 8
+            and float(outA.std()) >= 8 and float(outB.std()) >= 8):
+        return na, nb, "hole", conf
+    if na == 0 and nb == 0:
+        return na, nb, "skip", 0.0
+    if conf < 0.25:
+        return na, nb, "skip", conf
+    if na == 1 and nb == 1:
+        # full-extent match: A copy at tx matches B at bx0 over the
+        # whole support, not one edge (else halves pass as double).
+        return na, nb, "double", conf
+    return na, nb, "pair", conf
+
+
 def apply_trim(weight, rects, feather=FEATHER):
     """weight: (H, W) float blend weight (1 = B). Zero B over trim rects
     with cosine-feathered edges. Returns the trimmed weight."""
