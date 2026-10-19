@@ -51,7 +51,7 @@ def test_profile_path_and_commands_agree(monkeypatch) -> None:
     assert exc_yaw > exc_pitch
     # And the path converts to a real sendcmd file.
     txt = build_command_file(pts, fps=30.0)
-    assert "v360 yaw" in txt and "v360 h_fov" in txt
+    assert "v360@view yaw" in txt and "v360@view h_fov" in txt
 
 
 def test_permuted_map_moves_the_channels(monkeypatch) -> None:

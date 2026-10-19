@@ -35,7 +35,7 @@ def test_default_is_blend_stitch_then_single_flat():
     """Default sphere assembly is the two-pass blend (one v360 per lens),
     then a single flat projection reading that sphere."""
     graph = filtergraph(args_for(0.0))
-    assert graph.count("v360=") == 3
+    assert graph.count("v360=") + graph.count("v360@view=") == 3
     assert "maskedmerge" in graph
     assert "input=dfisheye" not in graph
     assert graph.split(";")[-1].endswith("[v]")
@@ -45,7 +45,7 @@ def test_default_is_blend_stitch_then_single_flat():
 def test_reversed_mount_reorients_the_sphere():
     graph = filtergraph(args_for(180.0))
     # Blend stitch (2 lens passes) + sphere reorientation + flat projection.
-    assert graph.count("v360=") == 4
+    assert graph.count("v360=") + graph.count("v360@view=") == 4
     assert "maskedmerge" in graph
     assert "yaw=-180" in graph
     # ...and the final projection reads from a sphere, not the fisheye.
