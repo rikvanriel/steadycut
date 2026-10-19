@@ -45,9 +45,8 @@ def test_auto_repair_clean_pair_is_plain_merge():
     wgt[:, 1536:] = 1.0
     M, cert = auto_repair(A, B, wgt)
     assert cert["spans"] == []
-    ref = (A.astype(float) * (1 - wgt[:, :, None])
-           + B.astype(float) * wgt[:, :, None])
-    assert np.abs(M.astype(float) - ref).mean() < 1.0
+    # passthrough: caller keeps its own (multiband) img.
+    assert M is None
 
 
 def _local_double(dx=60, seed=13):

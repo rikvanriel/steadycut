@@ -97,7 +97,8 @@ def lens_validity(h, w, fov_a=185.0, fov_b=183.5):
     return (incA <= np.radians(fov_a) / 2, incB <= np.radians(fov_b) / 2)
 
 
-def eroded_validity(gray, thresh=8, erode_px=ERODE_PX, bright_keep=100):
+def eroded_validity(gray, thresh=8, erode_px=ERODE_PX, bright_keep=100,
+                    color=None, sat_max=25.0):
     """Pixels safely inside a render's coverage (fringe excluded).
 
     Blind erosion also kills bright content at the FOV edge (a yellow
@@ -105,13 +106,28 @@ def eroded_validity(gray, thresh=8, erode_px=ERODE_PX, bright_keep=100):
     reads as a duplicate/split). Bright pixels are real content, not
     black-smear (smear is a dark mix), so they are restored: validity is
     eroded-mask OR bright. Dark smear stays dead; the tone stages correct
-    what remains.
+    what remains. When color (BGR) is given, bright-keep additionally
+    requires near-gray: the coverage-edge resampling fringe is bright
+    AND saturated (B-R 56-99 DN at the rim), while real bright content
+    (sign, snow) is near-neutral. Saturated bright edge pixels stay
+    dead so the other lens (which sees them well inside its coverage)
+    wins them outright.
     """
     cv2 = __import__("cv2")
     g = np.asarray(gray)
     mask = (g > thresh).astype(np.uint8)
     dist = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
-    return (dist > erode_px) | (g > bright_keep)
+    keep = (dist > erode_px) | (g > bright_keep)
+    if color is not None:
+        c = np.asarray(color, dtype=np.float32)
+        if c.ndim == 3 and c.shape[2] == 3:
+            # SIGNED B-R: the coverage-edge resampling fringe is B>R
+            # (measured B-R +56..+99 at the rim). Yellow content is
+            # R-B (negative) and must survive at the edge — abs()
+            # would kill the sign the same way (finding-24 regression).
+            bluer = c[:, :, 0] - c[:, :, 2]
+            keep = keep & ((dist > erode_px) | (bluer <= sat_max))
+    return keep
 
 
 def residual_level(ea, eb, wgt, validA=None, validB=None, max_dn=8.0,
@@ -202,17 +218,67 @@ def residual_level(ea, eb, wgt, validA=None, validB=None, max_dn=8.0,
             # resampling) lives in B-R on sky/snow, where desaturation is
             # invisible; saturated content keeps its color (texture masks
             # any line there anyway). fside is smooth: no desat cliff.
+            # Seam-coherent admission (same surgery as the mag guard):
+            # sky tint at the seam runs 19-32 DN saturated — the gray
+            # gate is blind to it. Tint that is a function of x (shared
+            # across rows) is admitted at any saturation via its
+            # row-median B-R profile; LOCALIZED saturation (jacket,
+            # function of y) keeps the gate. Global tint (flat halves)
+            # is gain's job: admit only above the far-field level.
             im3 = img.reshape(h, w, nch)
             sat = np.abs(im3[:, :, 0] - im3[:, :, 2])
             lum = im3.mean(axis=2, keepdims=True)
-            g = (np.clip((gray_sat - sat) / gray_sat, 0, 1)
+            tint = im3[:, :, 0] - im3[:, :, 2]
+            tprof = np.median(np.where(near, tint, np.nan), axis=0)
+            tprof = np.where(np.isnan(tprof), 0.0, tprof)
+            u2c = np.clip(np.abs(xg - seam_x[:, None]).astype(float)
+                          / (2 * feather_px), 0, 1)
+            far_mc = (u2c >= 1.0) & both
+            if far_mc.any():
+                tfar = np.median(np.where(far_mc, tint, np.nan))
+                tfar = 0.0 if np.isnan(tfar) else float(tfar)
+            else:
+                tfar = 0.0
+            tloc = tprof - tfar
+            coh = np.abs(tloc)[None, :] > gray_sat
+            g = (np.maximum(np.clip((gray_sat - sat) / gray_sat, 0, 1),
+                            np.where(coh, 1.0, 0.0))
                  * fside)[:, :, None]
             img[:] = im3 * (1 - g) + lum * g
         dev = img.reshape(h, w, nch) - S
         # guard FIRST on raw dev (blurring first would smear big content
-        # edges under the gate): refuse, then smooth the correction itself
+        # edges under the gate): refuse, then smooth the correction itself.
+        # Seam-coherent admission: a defect that is a function of x
+        # (rim ring, flare — shared across rows) is admitted at any
+        # magnitude via its row-median x-profile; CONTENT is a function
+        # of y and stays under the max_dn gate. A bar (content) varies
+        # row to row, so its median profile is ~0 and it still refuses.
         mag = np.abs(dev).max(axis=2)
-        weight = ((mag <= max_dn) & near).astype(np.float32)
+        prof = np.median(np.where(near[:, :, None], dev, np.nan),
+                         axis=0)
+        prof = np.where(np.isnan(prof), 0.0, prof)
+        # localize: a GLOBAL offset (flat halves, gain mismatch) is
+        # measure_gain's job, not this stage's — admit only the part
+        # of the profile that EXCEEDS its far-field level. A rim ring
+        # decays away from the seam; a global step does not. Far =
+        # beyond 2x feather (the near dilation reaches ~feather/4,
+        # the feather itself to 1x — 2x is safely outside both).
+        u2 = np.clip(np.abs(xg - seam_x[:, None]).astype(float)
+                     / (2 * feather_px), 0, 1)
+        far_m = (u2 >= 1.0) & both
+        if not far_m.any():
+            # no far-field evidence (tiny frame, giant feather): cannot
+            # localize — fall back to the magnitude gate (old behavior).
+            profloc = np.zeros_like(prof)
+        else:
+            far = np.median(np.where(far_m[:, :, None], dev, np.nan),
+                            axis=(0, 1))
+            far = np.where(np.isnan(far), 0.0, far)
+            profloc = prof - far[None, :]
+        resid = dev - profloc[None, :, :]
+        rmag = np.abs(resid).max(axis=2)
+        weight = (((mag <= max_dn) | (rmag <= max_dn)) & near).astype(
+            np.float32)
         # normalized convolution: smooth the correction without dragging
         # refused content-rows into clean sky (plain blur would smear a
         # tree row's vetoed pixels across +-sigma_rows of sky)
@@ -419,8 +485,18 @@ def repair_spans(eqA, eqB, wgt, spans, fov_a=185.0, fov_b=183.5,
         y0c, y1c = max(0, y0), min(H, y1)
         if dx is not None:
             dest = (x0 + x1) / 2 - dx
-            F[y0c:y1c] = (float(dx), 0.0)
-            C[y0c:y1c] = dest_src_window(W, dest, x1)[None, :]
+            # x-restricted: F/C rows are full-width per span, so a warp
+            # tree span sharing rows with a trim-only skier span would
+            # move the skier's B-copy out from under its trim rect.
+            # Confine the flow to the span's own columns.
+            win = dest_src_window(W, dest, x1)
+            xs0, xs1 = max(0, x0 - 12), min(W, x1 + 12)
+            F[y0c:y1c, xs0:xs1, 0] = float(dx)
+            Crow = np.zeros(W, np.float32)
+            Crow[xs0:xs1] = win[xs0:xs1]
+            C[y0c:y1c] = np.maximum(C[y0c:y1c],
+                                    np.broadcast_to(Crow[None, :],
+                                                    (y1c - y0c, W)))
             n = min(12, (y1c - y0c) // 2)
             if n > 0:
                 r = (0.5 - 0.5 * np.cos(np.linspace(0, np.pi, n))
@@ -432,23 +508,30 @@ def repair_spans(eqA, eqB, wgt, spans, fov_a=185.0, fov_b=183.5,
     # flow is zero outside them so splicing is exact).
     modelA, modelB = lens_validity(H, W, fov_a, fov_b)
     Bc = B.copy()
-    validBc = eroded_validity(_gray(B)) & modelB
+    # SAME validity the merge uses (color-gated): repair must agree
+    # with the merge about coverage, else trim is silently undone at
+    # :522 (B comes back where validA fails) or fringe is pasted back
+    # by the patch loop below.
+    validBc = eroded_validity(_gray(B), color=B) & modelB
     for sx in sorted({s[2] for s in spans} | {1536}):
         x0, x1 = sx - halfw, sx + halfw
         Bc[:, x0:x1] = compose_corrected_B(
             B, sx, halfw, F[:, x0:x1], C[:, x0:x1])[:, x0:x1]
         validBc[:, x0:x1] = (
             compose_corrected_B(
-                ((eroded_validity(_gray(B)) & modelB).astype(np.float32)
-                 * 255).astype(np.uint8),
+                ((eroded_validity(_gray(B), color=B) & modelB).astype(
+                    np.float32) * 255).astype(np.uint8),
                 sx, halfw, F[:, x0:x1], C[:, x0:x1])[:, x0:x1] > 127)
-    validA = eroded_validity(_gray(A)) & modelA
+    validA = eroded_validity(_gray(A), color=A) & modelA
     w2 = apply_trim(np.asarray(wgt, dtype=float), trim_rects)
     if reroute:
         try:
             from steadycut.render.seam_route import route_both
             from steadycut.render.sphere_maps import routed_weight
-            seams = sorted({s[2] for s in spans})
+            # ALWAYS both seams: routing 512-only leaves 0 ramp px at
+            # 1536 instead of 21 (measured hard cut). Extra spans only
+            # make the single-seam bug more common.
+            seams = sorted(set([s[2] for s in spans] + [512, 1536]))
             polys = route_both(A.astype(np.uint8), Bc.astype(np.uint8),
                                seams=tuple(seams), halfw=48, width=W,
                                fov_a=fov_a, fov_b=fov_b)
@@ -483,6 +566,11 @@ def repair_spans(eqA, eqB, wgt, spans, fov_a=185.0, fov_b=183.5,
             if len(run) < 24:
                 continue
             ax0, ax1 = int(run[0]), int(run[-1]) + 1
+            # mask with the merge's validA: the model-only joint strip
+            # would paste A's rim fringe back in after the trim. Skip
+            # rows where A is not really valid there.
+            if float(validA[yy, ax0:ax1].mean()) < 0.9:
+                continue
             ra = onlyA[yy, max(0, sx - 120):sx - 40]
             rb = onlyB[yy, sx + 40:min(W, sx + 120)]
             if ra.sum() < 8 or rb.sum() < 8:
@@ -533,18 +621,24 @@ def auto_repair(eqA, eqB, wgt, fov_a=185.0, fov_b=183.5,
             found.append((sx, r))
     cert = {"spans": []}
     if not found:
-        w3 = np.asarray(wgt, dtype=float)[:, :, None]
-        merged = (np.asarray(eqB).astype(float) * w3
-                  + np.asarray(eqA).astype(float) * (1 - w3))
-        return np.clip(merged, 0, 255).astype(np.uint8), cert
+        # passthrough (same reason as below): caller owns the img.
+        return None, cert
     fixed = []
     for sx, rect in found:
         dx, n = span_displacement(eqA, eqB, rect)
         if dx is None:
-            # detection without displacement: acting (trim or patch)
-            # would swap in the other lens's content on a mere
-            # lookalike (forest gross-similarity passes NCC tiers).
-            # Log for eye measurement, change nothing.
+            # trim-only without displacement: allowed ONLY with all
+            # four gates — (1) in-joint fraction >= 0.8 (raw extent
+            # returned by detection; a copy wider than the joint
+            # would chop into a half-object split), (2) merge-validA
+            # covers >= 0.9 of the trim rect (else B comes back at
+            # :522 and the trim is silently undone), (3) finding-25
+            # instance count (one instance per lens = double; two =
+            # pair; neither mid = hole; else skip), (4) latitude band
+            # (nadir joint balloons to ~290px with non-horizontal
+            # parallax — cap rect width at ~2x the equator joint).
+            # skip: needs raw-extent + instance-count instruments;
+            # landing the branch with gates open would trim lookalikes.
             cert["spans"].append({"rect": [int(v) for v in rect],
                                   "dx": None, "votes": int(n),
                                   "action": "skipped-needs-eye",
@@ -555,8 +649,8 @@ def auto_repair(eqA, eqB, wgt, fov_a=185.0, fov_b=183.5,
                               "votes": int(n), "action": "warp+trim+patch",
                               "seam": sx})
     if not fixed:
-        w3 = np.asarray(wgt, dtype=float)[:, :, None]
-        merged = (np.asarray(eqB).astype(float) * w3
-                  + np.asarray(eqA).astype(float) * (1 - w3))
-        return np.clip(merged, 0, 255).astype(np.uint8), cert
+        # passthrough: the caller (stitch.py) owns the multiband img;
+        # a single-band merge here would OVERWRITE its
+        # validity/residual_level work on every skipped frame.
+        return None, cert
     return repair_spans(eqA, eqB, wgt, fixed, fov_a, fov_b), cert

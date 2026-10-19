@@ -456,7 +456,8 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
                                                 residual_level)
         lumA = ea.mean(axis=2) if ea.ndim == 3 else ea
         lumB = eb.mean(axis=2) if eb.ndim == 3 else eb
-        vA, vB = eroded_validity(lumA), eroded_validity(lumB)
+        vA, vB = eroded_validity(lumA, color=ea), eroded_validity(lumB,
+                                                                  color=eb)
         ea, eb, _einfo = edge_flatten(ea, eb, wgt, vA, vB)
         ea, eb, _linfo = residual_level(ea, eb, wgt, vA, vB)
         img = multiband_merge(ea.astype(np.uint8), eb.astype(np.uint8),
@@ -471,9 +472,13 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
                                    spec.lens_fov_b)
                 print(f"CLI| nearfield {len(parsed)} explicit spans repaired")
             else:
-                img, ncert = auto_repair(ea.astype(np.uint8),
-                                         eb.astype(np.uint8), wgt,
-                                         spec.lens_fov_a, spec.lens_fov_b)
+                img_r, ncert = auto_repair(ea.astype(np.uint8),
+                                           eb.astype(np.uint8), wgt,
+                                           spec.lens_fov_a, spec.lens_fov_b)
+                # None = nothing actionable: keep the multiband img
+                # (auto_repair must never single-band over it).
+                if img_r is not None:
+                    img = img_r
                 for s in ncert["spans"]:
                     print(f"CLI| nearfield seam {s['seam']} rect {s['rect']}"
                           f" dx {s['dx']} votes {s['votes']}: {s['action']}")
@@ -584,8 +589,8 @@ def tone_fields(source: str, spec, gain: tuple, t: float,
                                                 residual_level)
         wgt, _ = blend_weight(w, h, spec.ramp_deg, spec.lens_fov_a,
                               spec.lens_fov_b)
-        vA = eroded_validity(ea.mean(axis=2))
-        vB = eroded_validity(eb.mean(axis=2))
+        vA = eroded_validity(ea.mean(axis=2), color=ea)
+        vB = eroded_validity(eb.mean(axis=2), color=eb)
         ea2, eb2, einfo = edge_flatten(ea.copy(), eb.copy(), wgt, vA, vB)
         ea3, eb3, linfo = residual_level(ea2, eb2, wgt, vA, vB)
         info = {"edge": einfo, "level": linfo}
