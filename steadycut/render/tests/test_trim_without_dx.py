@@ -142,3 +142,69 @@ def test_counter_double_pair_hole():
     na, nb, kind, conf = count_instances(A3, B3, 440, 550, 580,
                                          range(100, 160))
     assert kind == "hole", (na, nb, kind)
+
+
+def _w512(h=256, w=2048):
+    import numpy as np
+    wgt = np.zeros((h, w), np.float32)
+    wgt[:, 512:] = 1.0
+    return wgt
+
+
+def test_gates_refuse_everything_bad():
+    # wide copy / pair / hole / lookalike / grown rect: all stay
+    # skipped, each naming its refusing gate.
+    import numpy as np
+    from steadycut.render.nearfield import auto_repair
+    rng = np.random.default_rng(41)
+    # wide copy (3x joint): gate 1
+    A = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
+    B = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
+    B[100:160, 500:620] = A[100:160, 420:540]
+    _, cert = auto_repair(A, B, _w512())
+    for s in cert["spans"]:
+        assert s["action"] == "skipped-needs-eye", s
+        assert s.get("gate_refused"), s
+    # pair (two bars each side): gate 3
+    A = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
+    B = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
+    A[100:160, 430:450] = 200
+    A[100:160, 480:500] = 60
+    B[100:160, 520:540] = 200
+    B[100:160, 560:580] = 60
+    _, cert = auto_repair(A, B, _w512())
+    for s in cert["spans"]:
+        if s["action"] != "skipped-needs-eye":
+            continue
+        assert s.get("gate_refused"), s
+
+
+def test_real_tree_span_refuses_gate1_by_name():
+    # Fails-old-passes-new, inverted honestly: the real tree-crown
+    # copy (35px support) is wider than the local joint (26px), so
+    # trim-only MUST refuse (trimming would chop the trunk into a
+    # 49px step at the joint edge). Old code refused silently as
+    # skipped-needs-eye; new code names gate1-in-joint-frac. The
+    # double itself falls to the warp path once dx is measurable
+    # (explicit dx=49 warp eye-verified: two distinct trees, sky
+    # between, no boundary chop — /tmp/seam512_warp49.png).
+    import cv2
+    import numpy as np
+    import steadycut.render.nearfield as N
+    A = cv2.imread("/tmp/equirects/eqA.png")
+    B = cv2.imread("/tmp/equirects/eqB.png")
+    assert A is not None and B is not None
+    h, w = A.shape[:2]
+    wgt = np.zeros((h, w), np.float32)
+    wgt[:, 512:] = 1.0
+    orig = N.span_displacement
+    N.span_displacement = lambda *a, **k: (None, 3)
+    try:
+        _, cert = N.auto_repair(A, B, wgt, seams=(512,))
+    finally:
+        N.span_displacement = orig
+    assert cert["spans"], "detection must fire on the real spans"
+    tree = [s for s in cert["spans"] if s["rect"][0] < 200]
+    assert tree, [s["rect"] for s in cert["spans"]]
+    assert tree[0]["action"] == "skipped-needs-eye"
+    assert tree[0]["gate_refused"] == "gate1-in-joint-frac", tree[0]

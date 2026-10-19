@@ -171,6 +171,19 @@ def _scan_band(gA, gB, cv2, jv, sx, x0s, tx, y0, y1,
     runs.append((rs, re))
     base = max(0, bx0 - x0s)
     disp = float(bx0 - tx)
+    # copy support: gradient-energy columns of the matched B window
+    # (the copy's structure, not the whole 32px template: a 32px
+    # window in a 24px joint caps support-frac at 0.75 and gate 1
+    # could never pass at the equator).
+    bw = gB[y0:y1, bx0:bx0 + TEMPLATE_W].astype(np.float32)
+    col = np.abs(np.diff(bw.astype(float), axis=1)).mean(axis=0)
+    bg = float(np.median(col)) + 1e-6
+    hot = col > 2 * bg
+    hx = np.where(hot)[0]
+    if len(hx):
+        sup = (bx0 + int(hx[0]), bx0 + int(hx[-1]) + 2)
+    else:
+        sup = (bx0, bx1)
     for rs, re in runs:
         if re + 1 - rs < 16:
             continue
@@ -182,7 +195,7 @@ def _scan_band(gA, gB, cv2, jv, sx, x0s, tx, y0, y1,
         if len(ys) < 20:
             continue
         found.append(Span(y0 + int(ys[0]), y0 + int(ys[-1]) + 1, ax0,
-                          ax1, mutual, best, tx, disp, bx0, bx1))
+                          ax1, mutual, best, tx, disp, sup[0], sup[1]))
     return found
 
 

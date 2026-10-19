@@ -610,13 +610,19 @@ def auto_repair(eqA, eqB, wgt, fov_a=185.0, fov_b=183.5,
     (rect, dx, votes, action: warp+trim+patch | trim+patch | skipped).
     A clean pair returns the plain merge with no spans.
     """
-    from steadycut.render.dup_trim import (find_duplicates,
-                                           find_duplicates_sift)
+    from steadycut.render.dup_trim import (Span, count_instances,
+                                           find_duplicates_detailed,
+                                           find_duplicates_sift,
+                                           ramp_duplication)
+    from steadycut.render.sphere_maps import joint_valid_strip
     H, W = np.asarray(eqA).shape[:2]
+    modelA, _ = lens_validity(H, W, fov_a, fov_b)
+    gA = np.asarray(eqA)
+    validA = (eroded_validity(_gray(gA), color=gA) & modelA)
     found = []
     for sx in seams:
-        for r in find_duplicates(eqA, eqB, seams=(sx,)):
-            found.append((sx, r))
+        for sp in find_duplicates_detailed(eqA, eqB, seams=(sx,)):
+            found.append((sx, sp))
         for r in find_duplicates_sift(eqA, eqB, seams=(sx,)):
             found.append((sx, r))
     cert = {"spans": []}
@@ -624,33 +630,154 @@ def auto_repair(eqA, eqB, wgt, fov_a=185.0, fov_b=183.5,
         # passthrough (same reason as below): caller owns the img.
         return None, cert
     fixed = []
-    for sx, rect in found:
+    lat_lo, lat_hi = int(80 * H / 1024), int(950 * H / 1024)
+    for sx, item in found:
+        rect = tuple(item[:4])
+        if isinstance(item, Span):
+            det = item
+        else:
+            det = None
         dx, n = span_displacement(eqA, eqB, rect)
-        if dx is None:
-            # trim-only without displacement: allowed ONLY with all
-            # four gates — (1) in-joint fraction >= 0.8 (raw extent
-            # returned by detection; a copy wider than the joint
-            # would chop into a half-object split), (2) merge-validA
-            # covers >= 0.9 of the trim rect (else B comes back at
-            # :522 and the trim is silently undone), (3) finding-25
-            # instance count (one instance per lens = double; two =
-            # pair; neither mid = hole; else skip), (4) latitude band
-            # (nadir joint balloons to ~290px with non-horizontal
-            # parallax — cap rect width at ~2x the equator joint).
-            # skip: needs raw-extent + instance-count instruments;
-            # landing the branch with gates open would trim lookalikes.
+        if dx is not None:
+            fixed.append((rect, dx, sx))
+            cert["spans"].append({"rect": [int(v) for v in rect],
+                                  "dx": dx, "votes": int(n),
+                                  "action": "warp+trim+patch",
+                                  "seam": sx})
+            continue
+        # trim-only without displacement: five gates, first failure
+        # recorded; SIFT rects (no Span details) always skip here
+        # (gate 5 = mutual NCC only; SIFT+dx lives on the warp path).
+        refused = None
+        y0, y1, x0, x1 = (int(v) for v in rect)
+        if det is None or not det.mutual:
+            refused = "gate5-corroboration"
+        else:
+            jv = joint_valid_strip(sx, 100, fov_a, fov_b, H, W)
+            x0s = max(0, sx - 100)
+            sup0, sup1 = max(0, det.sup0), min(W, det.sup1)
+            jfracs = []
+            for yy in range(max(0, y0), min(H, y1)):
+                jrow = set((np.where(
+                    jv[yy, max(0, sup0 - x0s):min(
+                        jv.shape[1], sup1 - x0s)])[0] + x0s).tolist())
+                jfracs.append(len(set(range(sup0, sup1)) & jrow)
+                              / max(1, sup1 - sup0))
+            jfrac = float(np.median(jfracs)) if jfracs else 0.0
+            if jfrac < 0.8:
+                refused = "gate1-in-joint-frac"
+            else:
+                rows = np.arange(max(0, y0), min(H, y1))
+                cols = slice(max(0, sup0), min(W, sup1))
+                lane = validA[max(0, y0):min(H, y1), cols].mean(axis=1) \
+                    if len(rows) else np.array([0.0])
+                ok = lane >= 0.9
+                n_ok = int(ok.sum())
+                contiguous = n_ok and (np.where(ok)[0].ptp() + 1 == n_ok)
+                if not (n_ok >= 0.9 * len(rows) and contiguous):
+                    refused = "gate2-validA-rows"
+                else:
+                    na, nb, kind, conf = count_instances(
+                        eqA, eqB, det.tx, det.tx + int(det.disp or 0),
+                        sup1, rows)
+                    if kind != "double":
+                        refused = "gate3-instance-count"
+                    elif sup1 - sup0 > 2 * np.median([
+                            int(jv[yy].sum()) for yy in rows
+                            ]) or y0 < lat_lo or y1 > lat_hi:
+                        refused = "gate4-extent-latitude"
+        if refused is not None:
             cert["spans"].append({"rect": [int(v) for v in rect],
                                   "dx": None, "votes": int(n),
                                   "action": "skipped-needs-eye",
+                                  "gate_refused": refused,
                                   "seam": sx})
             continue
-        fixed.append((rect, dx, sx))
-        cert["spans"].append({"rect": [int(v) for v in rect], "dx": dx,
-                              "votes": int(n), "action": "warp+trim+patch",
-                              "seam": sx})
+        fixed.append((rect, None, sx))
+        cert["spans"].append({"rect": [int(v) for v in rect],
+                              "dx": None, "votes": int(n),
+                              "action": "trim-only",
+                              "gate_refused": None, "seam": sx})
+    # overlap veto: a trim candidate overlapping a warp span or a
+    # dxless SIFT span is evaluated on the union: any skip vetoes
+    # the whole. (NCC+SIFT report the same copy separately; one
+    # trimming while the other skips/warps splits the object.)
+    warp_rects = [f[0] for f in fixed if f[1] is not None]
+    sift_rects = [tuple(s[:4]) for _, s in found
+                  if not isinstance(s, Span)]
+    def _overlap(a, b):
+        ax0, ay0, ax1, ay1 = a[2], a[0], a[3], a[1]
+        bx0, by0, bx1, by1 = b[2], b[0], b[3], b[1]
+        return (min(ax1, bx1) > max(ax0, bx0)
+                and min(ay1, by1) > max(ay0, by0))
+    kept, vetoed = [], 0
+    for (rect, dx, sx) in fixed:
+        if dx is None and any(_overlap(rect, w) for w in warp_rects
+                              + sift_rects):
+            vetoed += 1
+            for s in cert["spans"]:
+                if (s["action"] == "trim-only"
+                        and s["rect"] == [int(v) for v in rect]):
+                    s["action"] = "skipped-needs-eye"
+                    s["gate_refused"] = "gate5-overlap-veto"
+        else:
+            kept.append((rect, dx, sx))
+    fixed = kept
     if not fixed:
         # passthrough: the caller (stitch.py) owns the multiband img;
         # a single-band merge here would OVERWRITE its
         # validity/residual_level work on every skipped frame.
         return None, cert
-    return repair_spans(eqA, eqB, wgt, fixed, fov_a, fov_b), cert
+    merged = repair_spans(eqA, eqB, wgt, fixed, fov_a, fov_b)
+    # runtime post-trim gate: B-score to baseline (+-2 DN tol) AND
+    # step <= pre-trim per trim span, else revert that span and
+    # re-run once. Logged in cert; A4 histogram reads it.
+    plain = (np.asarray(eqB).astype(float)
+             * np.asarray(wgt, dtype=float)[:, :, None]
+             + np.asarray(eqA).astype(float)
+             * (1 - np.asarray(wgt, dtype=float)[:, :, None]))
+    gA0 = _gray(np.asarray(eqA))
+    gB0 = _gray(np.asarray(eqB))
+    bad = []
+    for (rect, dx, sx) in fixed:
+        if dx is not None:
+            continue
+        y0, y1, x0, x1 = rect
+        pre = ramp_duplication(plain[:, :, 0] if plain.ndim == 3
+                               else plain, gA0, gB0, sx)
+        post = ramp_duplication(_gray(merged), gA0, gB0, sx)
+        key = next((k for k in post
+                    if k[0] <= (y0 + y1) // 2 < k[1]), None)
+        preB = pre[key][1] if key else 1.0
+        postB = post[key][1] if key else 1.0
+        # step = across-seam L-R difference in the span rows (the
+        # visible line), pre vs post.
+        def _step(img):
+            img = np.asarray(img, float)
+            if img.ndim == 3:
+                img = img.mean(axis=2)
+            L = img[y0:y1, max(0, sx - 30):max(0, sx - 5)]
+            R = img[y0:y1, min(W, sx + 5):min(W, sx + 30)]
+            return float(abs(R.mean() - L.mean())) if L.size and R.size \
+                else 0.0
+        step_pre, step_post = _step(plain), _step(merged)
+        for s in cert["spans"]:
+            if s["action"] == "trim-only" and s["rect"] == [int(v)
+                                                            for v in rect]:
+                s["pre_B"], s["post_B"] = round(preB, 3), round(
+                    postB, 3)
+                s["pre_step"], s["post_step"] = round(step_pre, 2), \
+                    round(step_post, 2)
+        if not (postB <= 0.8 and step_post <= step_pre + 2.0):
+            bad.append((rect, dx, sx))
+            for s in cert["spans"]:
+                if s["action"] == "trim-only" and s["rect"] == [int(v)
+                                                                for v in rect]:
+                    s["action"] = "skipped-needs-eye"
+                    s["gate_refused"] = "runtime-post-trim"
+    if bad:
+        fixed = [f for f in fixed if f not in bad]
+        if not fixed:
+            return None, cert
+        merged = repair_spans(eqA, eqB, wgt, fixed, fov_a, fov_b)
+    return merged, cert
