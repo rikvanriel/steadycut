@@ -111,3 +111,28 @@ def test_window_must_cover_destination():
         np.clip(1 - np.abs(xs - src) / 35, 0, 1) * np.pi)).astype(np.float32)
     bad = np.broadcast_to(bad[None, :], (h, w)).copy()
     assert residual(bad) > 15.0, residual(bad)
+
+
+def test_blend_scaled_flow_zero_outside_transition():
+    from steadycut.render.corridor_flow import blend_scaled_flow
+    flow = np.full((2, 4, 2), 40.0, np.float32)
+    alpha = np.array([[0.0, 0.25, 0.75, 1.0]] * 2, np.float32)
+    out = blend_scaled_flow(flow, alpha)
+    assert np.all(out[:, 0] == 0) and np.all(out[:, 3] == 0)
+    assert np.allclose(out[:, 1, 0], 30.0)
+    assert np.allclose(out[:, 2, 0], 10.0)
+
+
+def test_fuse_left_right_flow_is_sign_consistent():
+    from steadycut.render.corridor_flow import fuse_left_right_flow
+    left = np.array([[[10.0, -10.0]]], np.float32)
+    right = np.array([[[-30.0, 30.0]]], np.float32)
+    out = fuse_left_right_flow(left, right)
+    assert out[0, 0, 0] == 30.0
+    assert out[0, 0, 1] == -30.0
+
+
+def test_temporal_median_flow_rejects_outlier():
+    from steadycut.render.corridor_flow import temporal_median_flow
+    flows = [np.full((2, 2, 2), v, np.float32) for v in (4.0, 5.0, 100.0)]
+    assert np.all(temporal_median_flow(flows) == 5.0)

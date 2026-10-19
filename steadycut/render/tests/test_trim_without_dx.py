@@ -286,3 +286,12 @@ def test_parallax_budget_veto():
                and s["gate_refused"] == "dx-exceeds-parallax-budget"
                for s in cert["spans"]), [(s["action"], s.get("gate_refused"))
                                           for s in cert["spans"]]
+
+
+def test_flow_budget_cap_never_exceeds():
+    # Cap is the never-exceed mechanism (not an admit): flow magnitude
+    # beyond budget is clamped to the budget (or refused). dx=200 on
+    # any span must not deliver its full value.
+    from steadycut.render.dup_trim import parallax_budget
+    assert parallax_budget(595, 705, 25) < 200
+    assert parallax_budget(50, 130, 26) >= 49  # tree still admitted

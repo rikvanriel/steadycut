@@ -515,13 +515,16 @@ def repair_spans(eqA, eqB, wgt, spans, fov_a=185.0, fov_b=183.5,
     validBc = eroded_validity(_gray(B), color=B) & modelB
     for sx in sorted({s[2] for s in spans} | {1536}):
         x0, x1 = sx - halfw, sx + halfw
+        alpha = 1.0 - np.asarray(wgt, dtype=np.float32)[:, x0:x1]
         Bc[:, x0:x1] = compose_corrected_B(
-            B, sx, halfw, F[:, x0:x1], C[:, x0:x1])[:, x0:x1]
+            B, sx, halfw, F[:, x0:x1], C[:, x0:x1],
+            alpha=alpha)[:, x0:x1]
         validBc[:, x0:x1] = (
             compose_corrected_B(
                 ((eroded_validity(_gray(B), color=B) & modelB).astype(
                     np.float32) * 255).astype(np.uint8),
-                sx, halfw, F[:, x0:x1], C[:, x0:x1])[:, x0:x1] > 127)
+                sx, halfw, F[:, x0:x1], C[:, x0:x1],
+                alpha=alpha)[:, x0:x1] > 127)
     validA = eroded_validity(_gray(A), color=A) & modelA
     w2 = apply_trim(np.asarray(wgt, dtype=float), trim_rects)
     if reroute:

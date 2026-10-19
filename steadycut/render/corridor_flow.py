@@ -205,7 +205,44 @@ def dest_src_window(W, dest, src, ramp=12):
     return 0.5 - 0.5 * np.cos(np.clip(v, 0, 1) * np.pi)
 
 
-def compose_corrected_B(eqB, seam_x, halfw, flow, conf):
+def blend_scaled_flow(flow, alpha):
+    """Studio flow scaling: flow * (1 - alpha), only inside the blend.
+
+    alpha is the A-side blend weight per pixel. Outside the transition
+    (alpha 0 or 1) the correction is zero by construction, so a warp
+    cannot tear single-lens territory at the band edges.
+    """
+    f = np.asarray(flow, dtype=np.float32)
+    a = np.asarray(alpha, dtype=np.float32)
+    if a.ndim == 2:
+        a = a[:, :, None]
+    factor = np.where((a > 0) & (a < 1), 1.0 - a, 0.0)
+    return (f * factor).astype(np.float32)
+
+
+def fuse_left_right_flow(flow_lr, flow_rl):
+    """Sign-consistent L/R flow fusion (Studio UpdateLeftRightFlows).
+
+    Per component: where the left flow is nonnegative take the larger
+    of (L, -R), otherwise the smaller. Disagreement collapses toward
+    the conservative signed value instead of averaging opposites.
+    """
+    left = np.asarray(flow_lr, dtype=np.float32)
+    right = np.asarray(flow_rl, dtype=np.float32)
+    neg_r = -right
+    return np.where(left >= 0, np.maximum(left, neg_r),
+                    np.minimum(left, neg_r)).astype(np.float32)
+
+
+def temporal_median_flow(flows):
+    """Temporal median across a deque of flow fields (Studio
+    getFilteredFlow). A single-frame outlier cannot survive the median.
+    """
+    stack = np.stack([np.asarray(f, dtype=np.float32) for f in flows])
+    return np.median(stack, axis=0).astype(np.float32)
+
+
+def compose_corrected_B(eqB, seam_x, halfw, flow, conf, alpha=None):
     """Confidence-gated flow correction of the full B equirect (Task 4.2).
 
     B_corr = remap(B, grid + flow * conf * feather): full warp at the seam
@@ -220,6 +257,8 @@ def compose_corrected_B(eqB, seam_x, halfw, flow, conf):
     x0 = max(0, seam_x - halfw)
     full_f = np.zeros((H, W, 2), np.float32)
     full_c = np.zeros((H, W), np.float32)
+    if alpha is not None:
+        flow = blend_scaled_flow(flow, alpha)
     full_f[:, x0:x0 + w] = flow
     full_c[:, x0:x0 + w] = conf
     xs = np.arange(W, dtype=np.float32)[None, :].repeat(H, axis=0)
