@@ -139,6 +139,59 @@ def plane_normal(rays):
     return n, float(np.sqrt((res ** 2).mean()))
 
 
+def plumb_residuals(params, chains_data):
+    """Joint residual vector. params = [cxA, cyA, cxB, cyB, f, k1].
+    chains_data = list of (lens, pts). Per chain: unproject with current
+    params, fit plane, stack ray-to-plane angular residuals (radians).
+    Rotation-free per lens: constrains centers + radial model only."""
+    cxA, cyA, cxB, cyB, f, k1 = params
+    out = []
+    for lens, pts in chains_data:
+        cx, cy = (cxA, cyA) if lens == 0 else (cxB, cyB)
+        rays = unproject(pts, cx, cy, f, k1)
+        n, _ = plane_normal(rays)
+        out.append(np.arcsin(np.clip(np.abs(rays @ n), 0, 1)))
+    return np.concatenate(out)
+
+
+def fit_plumb(chains_data, x0):
+    """Levenberg-Marquardt joint fit over centers + (f, k1). Returns
+    (result, rms_deg). Report-only: caller decides gates. Bounds keep
+    the solver off the degenerate at-infinity zero (parallel rays are
+    trivially coplanar): centers ±60px of circle fit, f ±12%, |k1|≤0.3."""
+    from scipy.optimize import least_squares
+    x0 = np.asarray(x0, float)
+    lo = np.array([x0[0] - 60, x0[1] - 60, x0[2] - 60, x0[3] - 60,
+                   x0[4] * 0.88, -0.3])
+    hi = np.array([x0[0] + 60, x0[1] + 60, x0[2] + 60, x0[3] + 60,
+                   x0[4] * 1.12, 0.3])
+    res = least_squares(plumb_residuals, x0, args=(chains_data,),
+                        bounds=(lo, hi), method='trf',
+                        max_nfev=200, verbose=0)
+    rms = float(np.sqrt((res.fun ** 2).mean()))
+    return res, np.degrees(rms)
+
+
+def open_curve(pts, bin_px=4.0):
+    """Collapse a there-and-back contour loop into a single open curve:
+    project on the PCA axis, median perpendicular per bin."""
+    p = np.asarray(pts, float)
+    mu, d, _ = chain_axis(p)
+    t = (p - mu) @ d
+    n = np.array([-d[1], d[0]])
+    s = (p - mu) @ n
+    lo, hi = t.min(), t.max()
+    nb = max(8, int((hi - lo) / bin_px))
+    edges = np.linspace(lo, hi, nb + 1)
+    idx = np.clip(np.digitize(t, edges) - 1, 0, nb - 1)
+    curve = []
+    for b in range(nb):
+        m = idx == b
+        if m.sum() >= 2:
+            curve.append(mu + d * t[m].mean() + n * np.median(s[m]))
+    return np.array(curve)
+
+
 def chain_axis(pts):
     """PCA axis of a chain: (center, direction, extent). Works for closed
     loops where endpoints coincide."""
