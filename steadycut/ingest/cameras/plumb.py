@@ -106,3 +106,41 @@ def line_info(p0, p1, cx, cy, r):
     rho = float(np.hypot(*(closest - np.array([cx, cy]))) / r)
     ang = float(np.degrees(np.arctan2(d[1], d[0]))) % 180
     return {'length': length, 'rho_min': rho, 'angle': ang}
+
+
+def chain_axis(pts):
+    """PCA axis of a chain: (center, direction, extent). Works for closed
+    loops where endpoints coincide."""
+    p = np.asarray(pts, float)
+    mu = p.mean(axis=0)
+    _, _, vt = np.linalg.svd(p - mu, full_matrices=False)
+    d = vt[0] / (np.linalg.norm(vt[0]) + 1e-12)
+    t = (p - mu) @ d
+    return mu, d, float(t.max() - t.min())
+
+
+def group_fragments(items, cx, cy, r, angle_tol=6.0, rho_tol=0.03):
+    """Cluster segments/chains into world-line groups by (angle, rho).
+
+    items: list of (p0, p1) endpoint pairs. Returns groups (lists of
+    indices) with merged info. Both edges of one jamb land in one group
+    only if within rho_tol — else they stay separate constraints (safe).
+    """
+    infos = [line_info(a, b, cx, cy, r) for a, b in items]
+    groups, used = [], [False] * len(items)
+    for i, inf in enumerate(infos):
+        if used[i]:
+            continue
+        g = [i]
+        used[i] = True
+        for j in range(i + 1, len(items)):
+            if used[j]:
+                continue
+            d_ang = abs(infos[j]['angle'] - inf['angle'])
+            d_ang = min(d_ang, 180 - d_ang)
+            if d_ang < angle_tol and abs(infos[j]['rho_min'] -
+                                        inf['rho_min']) < rho_tol:
+                g.append(j)
+                used[j] = True
+        groups.append(g)
+    return groups, infos
