@@ -119,6 +119,26 @@ def sagitta(pts):
     return float(np.abs((p - mu) @ n).max()), L
 
 
+def unproject(pts, cx, cy, f, k1=0.0):
+    """Fisheye pixels -> unit rays (equidistant + k1 radial). Lens frame:
+    x right, y down, z forward (out of the lens)."""
+    p = np.asarray(pts, float)
+    dx, dy = (p[:, 0] - cx) / f, (p[:, 1] - cy) / f
+    r = np.hypot(dx, dy)
+    th = r * (1 + k1 * r * r)
+    s = np.sinc(th / np.pi)  # sin(th)/th, safe at 0
+    return np.stack([dx * s, dy * s, np.cos(th)], axis=1)
+
+
+def plane_normal(rays):
+    """Best-fit plane normal through camera center for unit rays; also
+    RMS angular residual (great-circle agreement within one lens)."""
+    _, _, vt = np.linalg.svd(rays, full_matrices=False)
+    n = vt[-1] / (np.linalg.norm(vt[-1]) + 1e-12)
+    res = np.degrees(np.arcsin(np.clip(np.abs(rays @ n), 0, 1)))
+    return n, float(np.sqrt((res ** 2).mean()))
+
+
 def chain_axis(pts):
     """PCA axis of a chain: (center, direction, extent). Works for closed
     loops where endpoints coincide."""
