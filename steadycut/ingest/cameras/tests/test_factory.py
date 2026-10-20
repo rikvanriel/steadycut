@@ -36,3 +36,24 @@ def test_fit_lens_circle_on_synthetic():
     assert abs(c['r'] - 280) < 6  # fixed dark threshold biases r out
     # by ~2 blur-sigma; center (the load-bearing output) stays tight
     assert c['n'] > 1000
+
+
+def test_angular_finger_mask_is_sector_not_rows():
+    import numpy as np
+    from steadycut.ingest.cameras.plumb import angular_finger_mask
+    m = angular_finger_mask(200, 200, 100, 100, 90)
+    assert m.shape == (200, 200)
+    assert m[190, 100]  # bottom rim masked
+    assert not m[100, 100]  # center kept
+    assert not m[10, 100]  # top kept
+
+
+def test_chain_edgels_synthetic():
+    import numpy as np
+    from steadycut.ingest.cameras.plumb import chain_edgels
+    cv2 = __import__('cv2')
+    img = np.zeros((300, 300), np.uint8)
+    cv2.line(img, (20, 150), (280, 150), 255, 3)
+    chains = chain_edgels(img, min_len=100)
+    assert len(chains) >= 1
+    assert max(len(c) for c in chains) > 200
