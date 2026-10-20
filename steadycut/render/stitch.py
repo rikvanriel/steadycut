@@ -633,6 +633,62 @@ def tone_fields(source: str, spec, gain: tuple, t: float,
     return tuple(outs), info
 
 
+def measure_step_on_seam(img, seam, plateau=(10, 40), width=2048):
+    """Tone step across one seam on an in-memory frame: right-plateau
+    median minus left, per channel (B,G,R signed). Plateaus avoid the
+    ramp core. seam is a meridian column (int) or a per-row polyline
+    array in width-2048 coordinates (routed delivery); the plateaus
+    follow the delivered seam either way."""
+    import numpy as np
+    f = np.asarray(img, dtype=np.float32)
+    h, w = f.shape[:2]
+    sx = w / width
+    p0, p1 = plateau
+    if np.ndim(seam) == 0:
+        x = int(float(seam) * sx)
+        left = np.median(f[:, x - p1:x - p0].reshape(-1, 3), axis=0)
+        right = np.median(f[:, x + p0:x + p1].reshape(-1, 3), axis=0)
+    else:
+        xs = (np.asarray(seam, dtype=float) * sx).astype(int)
+        rows = np.arange(h)
+        xl0 = np.clip(xs - p1, 0, w - 1)
+        xl1 = np.clip(xs - p0, 0, w - 1)
+        xr0 = np.clip(xs + p0, 0, w - 1)
+        xr1 = np.clip(xs + p1, 0, w - 1)
+        lv, rv = [], []
+        for y in range(h):
+            if xl1[y] > xl0[y]:
+                lv.append(f[y, xl0[y]:xl1[y]])
+            if xr1[y] > xr0[y]:
+                rv.append(f[y, xr0[y]:xr1[y]])
+        left = np.median(np.concatenate(lv).reshape(-1, 3), axis=0)
+        right = np.median(np.concatenate(rv).reshape(-1, 3), axis=0)
+    return [round(float(v), 2) for v in (right - left)]
+
+
+def video_step_probe(eqA, eqB, wgt, seams=(512, 1536), polylines=None):
+    """Single-band merge of delivered per-lens equirects + step measured
+    at the delivered seam. This is the frame the video merge applies
+    (single-band maskedmerge), not the multiband still: the step the
+    leveling stage must actually correct. Returns ({key: step}, merged).
+    Keys are meridian ints, or tuples of the routed polyline (hashable;
+    leveling_frames accepts per-row arrays)."""
+    import numpy as np
+    w3 = np.asarray(wgt, dtype=np.float32)[..., None]
+    A = np.asarray(eqA, dtype=np.float32)
+    B = np.asarray(eqB, dtype=np.float32)
+    merged = (A * (1 - w3) + B * w3).astype(np.uint8)
+    out = {}
+    for s in seams:
+        if polylines and s in polylines:
+            poly = np.asarray(polylines[s], dtype=float)
+            out[tuple(float(v) for v in poly)] = measure_step_on_seam(
+                merged, poly)
+        else:
+            out[s] = measure_step_on_seam(merged, s)
+    return out, merged
+
+
 def measure_step(still_path, width=2048, seams=(512, 1536),
                  plateau=(10, 40)) -> dict:
     """Tone step across each seam: right-plateau median minus left, per

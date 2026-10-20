@@ -380,7 +380,10 @@ def main(argv=None) -> int:
         # window start, same pixels — no second render).
         try:
             from steadycut.render.stitch import (leveling_frames,
-                                                 measure_step, sphere_still)
+                                                 load_polylines,
+                                                 measure_step, sphere_still,
+                                                 video_step_probe)
+            from steadycut.render.sphere_maps import blend_weight
             if eqdir is None or not (eqdir / "eqA.png").exists():
                 eqdir = tmp / "equirects"
                 still = sphere_still(a.source, stitch, a.start,
@@ -389,11 +392,36 @@ def main(argv=None) -> int:
                                      spans=a.repair_spans)
             else:
                 still = rstill
-            steps = measure_step(still)
+            # d1: measure the step on the applied single-band video frame
+            # at the delivered seam (routed polyline when routed), not on
+            # the multiband still at the meridian. STEP_LIMIT unchanged.
+            # Falls back to the meridian multiband measurement with a cert
+            # note when the probe cannot run.
+            try:
+                cv2 = __import__("cv2")
+                polys = None
+                if (getattr(stitch, "seam", "meridian") == "routed"
+                        and stitch.seam_path):
+                    polys = load_polylines(stitch.seam_path)
+                wgt, _ = blend_weight(2048, 1024, stitch.ramp_deg,
+                                      stitch.lens_fov_a, stitch.lens_fov_b)
+                if polys:
+                    from steadycut.render.seam_route import route_weight
+                    wgt = route_weight(polys, wgt)
+                steps, _merged = video_step_probe(
+                    cv2.imread(str(eqdir / "eqA.png")),
+                    cv2.imread(str(eqdir / "eqB.png")), wgt,
+                    polylines=polys)
+                smeared = "video-singleband/routed" if polys else \
+                    "video-singleband/meridian"
+            except Exception as exc:
+                steps = measure_step(still)
+                smeared = f"multiband-meridian-fallback ({exc})"
             pp, nn, lcert = leveling_frames(stitch, steps)
             if pp is not None:
                 stitch = dataclasses.replace(stitch, leveling=(pp, nn))
             cert["leveling"] = lcert
+            cert["leveling"]["measured_on"] = smeared
             print(f"CLI| leveling applied={lcert['applied']} "
                   f"worst={max(abs(v) for s in steps.values() for v in s):.1f} DN")
         except Exception as exc:

@@ -3,7 +3,8 @@ import numpy as np
 import pytest
 
 from steadycut.render.stitch import (STEP_LIMIT_DN, StitchSpec, leveling_frames,
-                                     measure_step)
+                                     measure_step, measure_step_on_seam,
+                                     video_step_probe)
 
 
 def _still(step_bgr=(6.0, 6.0, 6.0), w=2048, h=1024):
@@ -21,6 +22,37 @@ def test_measure_step_reads_plateau_difference(tmp_path):
     cv2.imwrite(str(p), _still((6.0, -4.0, 2.0)))
     got = measure_step(p, seams=(1024,))
     assert got[1024] == pytest.approx([6.0, -4.0, 2.0], abs=1.0)
+
+
+def test_on_seam_matches_meridian_columns():
+    img = _still((6.0, -4.0, 2.0))
+    got = measure_step_on_seam(img, 1024)
+    assert got == pytest.approx([6.0, -4.0, 2.0], abs=1.0)
+
+
+def test_on_seam_follows_routed_polyline():
+    # step moved from x=1024 to x=1100: meridian reads clean, poly finds it
+    img = _still((6.0, 0.0, 0.0))
+    img[:, 1024:1100] = 100
+    assert measure_step_on_seam(img, 1024)[0] == pytest.approx(0.0, abs=1.0)
+    poly = np.full(1024, 1100.0)
+    got = measure_step_on_seam(img, poly)
+    assert got[0] == pytest.approx(6.0, abs=1.0)
+
+
+def test_video_probe_keys_routed_polylines_hashable():
+    import cv2
+    A = np.full((64, 128, 3), 100, np.uint8)
+    B = np.full((64, 128, 3), 112, np.uint8)
+    wgt = np.zeros((64, 128))
+    wgt[:, 64:] = 1.0
+    poly = np.full(64, 64.0 * 2048 / 128)
+    steps, merged = video_step_probe(A, B, wgt, seams=(1024,),
+                                     polylines={1024: poly})
+    assert len(steps) == 1
+    key = next(iter(steps))
+    assert isinstance(key, tuple)  # hashable for leveling_frames
+    assert steps[key][0] == pytest.approx(12.0, abs=1.0)
 
 
 def test_zero_step_yields_empty_frames():
