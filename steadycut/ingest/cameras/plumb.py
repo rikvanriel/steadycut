@@ -108,6 +108,17 @@ def line_info(p0, p1, cx, cy, r):
     return {'length': length, 'rho_min': rho, 'angle': ang}
 
 
+def sagitta(pts):
+    """Max deviation of chain points from their PCA axis, in px. The axis
+    (not the endpoint chord) is the reference so closed loops don't make
+    the chord degenerate. Deep arcs constrain radial distortion;
+    near-zero values are rotation-only witnesses."""
+    p = np.asarray(pts, float)
+    mu, d, L = chain_axis(pts)
+    n = np.array([-d[1], d[0]])
+    return float(np.abs((p - mu) @ n).max()), L
+
+
 def chain_axis(pts):
     """PCA axis of a chain: (center, direction, extent). Works for closed
     loops where endpoints coincide."""
