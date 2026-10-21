@@ -121,7 +121,10 @@ def sagitta(pts):
 
 def unproject(pts, cx, cy, f, k1=0.0):
     """Fisheye pixels -> unit rays (equidistant + k1 radial). Lens frame:
-    x right, y down, z forward (out of the lens)."""
+    x right, y down, z forward (out of the lens). The equidistant
+    r = f*theta core is the Kannala-Brandt wide-angle model
+    (https://users.aalto.fi/~kannalj1/publications/tpami2006.pdf):
+    factory stands, k1 bounded report-only (see plan 000008)."""
     p = np.asarray(pts, float)
     dx, dy = (p[:, 0] - cx) / f, (p[:, 1] - cy) / f
     r = np.hypot(dx, dy)

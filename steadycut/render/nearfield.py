@@ -418,7 +418,10 @@ def edge_flatten(ea, eb, wgt, validA=None, validB=None, max_dn=30.0,
 
 
 def multiband_merge(A, Bc, wgt, validA, validBc, bands=5):
-    """Pyramid blend: tone across octaves, detail at the cut.
+    """Pyramid blend: tone across octaves, detail at the cut. Multiresolution
+    spline after Burt & Adelson (https://persci.mit.edu/pub_pdfs/spline83.pdf):
+    each band blends over a zone proportional to its own wavelength, so
+    coarse tone dissolves while fine detail survives the cut.
 
     Partition masks over the union (each side wins where the other is
     blind — a weight-side mask alone leaves black ticks where the warp

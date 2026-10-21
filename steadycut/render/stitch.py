@@ -827,7 +827,9 @@ def sphere_filtergraph(spec: StitchSpec, gain: tuple,
     """Two-pass sphere assembly over BAKED lens tracks (see bake_lens_tracks:
     deflare + gain already applied). Inputs: [0:v] lens A equirect source,
     [1:v] lens B equirect source, [2:v] ramp mask. Each lens is projected
-    with its own calibrated FOV; maskedmerge joins them on [s].
+    with its own calibrated FOV; maskedmerge joins them on [s]. Fisheye
+    mapping follows ffmpeg's v360 equidistant model (ih_fov/iv_fov set the
+    input scale; https://ffmpeg.org/ffmpeg-filters.html, v360 section).
     tone: optional (posA, negA, posB, negB) looped-still Paths from
     tone_fields (static per-window edge/residual corrections). They ride as
     [3:v]..[6:v]; applied post-v360 pre-merge in GBRP (corrections are
