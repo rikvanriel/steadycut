@@ -1,4 +1,5 @@
 """Seam routing, both seams independently (Tasks 3.1, 3.2b): Viterbi path.
+Optimal-path seam after Avidan & Shamir (see docs/sources.md).
 
 Cost v2 (measured): the v1 |A-B| cost threads BETWEEN doubled projections
 (a 37 px trunk ghost survived routing — both copies stay fully visible).

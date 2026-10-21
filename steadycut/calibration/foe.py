@@ -47,7 +47,8 @@ def flow_to_rays(xs, ys, us, vs, w, h):
 
 
 def essential_travel(p1, p2, seed=0):
-    """Travel direction from two ray sets via the essential matrix.
+    """Travel direction from two ray sets via the essential matrix
+    (Nister five-point; see docs/sources.md).
 
     No derotation needed: rotation and translation are fit jointly, so
     gyro sync/axis-map errors cannot bias the bearing (they only remove

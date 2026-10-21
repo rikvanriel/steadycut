@@ -61,3 +61,44 @@ ratio, per-window tone fits, and all gates/budgets.
   Highly accurate IMU orientation estimation with bias estimation and
   magnetic disturbance rejection", Information Fusion 2023.
   https://doi.org/10.1016/j.inffus.2022.10.014
+
+- **Feature tracking (verification harness).** `testing/synthetic_track`
+  tracks with Lucas–Kanade plus forward–backward consistency:
+  Bruce D. Lucas and Takeo Kanade, "An Iterative Image Registration
+  Technique with an Application to Stereo Vision", IJCAI 1981.
+  http://www.ijcai.org/Proceedings/81-2/Papers/017.pdf
+  Corners come from Tomasi–Kanade ("Detection and Tracking of Point
+  Features", CMU tech report 1991).
+  https://cecas.clemson.edu/~stb/klt/tomasi-kanade-techreport-1991.pdf
+
+- **Line and edge inventory.** `plumb.py` tile votes use the Hough
+  transform (OpenCV tutorial):
+  https://docs.opencv.org/4.x/d9/db0/tutorial_hough_lines.html
+  Edgel chaining follows the Canny program (hysteresis-linked gradient
+  maxima): John Canny, "A Computational Approach to Edge Detection",
+  IEEE TPAMI 1986. https://ieeexplore.ieee.org/document/4767858
+
+- **Calibrated relative pose.** `calibration/foe.py` travel direction
+  goes through the essential matrix (`findEssentialMat`): David
+  Nister, "An Efficient Solution to the Five-Point Relative Pose
+  Problem", IEEE TPAMI 2004.
+  https://www-users.cse.umn.edu/~hspark/CSci5980/nister.pdf
+
+- **Seam routing.** `render/seam_route.py` picks the seam by dynamic
+  programming over a per-row cost (Viterbi-style): the optimal-path
+  seam idea is Avidan & Shamir, "Seam Carving for Content-Aware Image
+  Resizing", SIGGRAPH 2007.
+  https://www.merl.com/publications/docs/TR2007-087.pdf
+
+- **Complementary attitude blending.** `stabilization/path.py`
+  `complementary_roll` is the 1-D form of the gyro/accel complementary
+  idea (gyro high frequencies, accel low): the full-attitude standard
+  reference is Mahony et al., "Nonlinear Complementary Filters on the
+  Special Orthogonal Group", IEEE TAC 2008 (see docs for the VQF
+  successor we actually ship). Author manuscript:
+  https://hal.science/file/index/docid/488376/filename/2007_Mahony.etal_TAC-06-396_v3.pdf
+  (IEEE: https://ieeexplore.ieee.org/document/4608934).
+
+- **Validity erosion.** `eroded_validity` uses the Euclidean distance
+  transform to feather masks (OpenCV `distanceTransform`):
+  https://docs.opencv.org/4.x/d4/d86/group__imgproc__filter.html
