@@ -541,7 +541,10 @@ def main(argv=None) -> int:
     _mark("stitch_setup")
 
     # 3. sync (same window; validated by residual later, not by a 2nd window).
-    sync = measure_sync(spec, workdir=tmp / "sync")
+    # Strided tracking: the matcher dominates render time and the peak
+    # holds at stride 5 on the bench windows, so the serving scan pays
+    # for one frame pair in five. The residual check stays full-rate.
+    sync = measure_sync(spec, workdir=tmp / "sync", track_stride=5)
     # The threshold rides with the estimator (4/sqrt(n) of the scan): a fixed
     # 0.5 discarded a real -100 ms offset on a 26 s rock-garden scan
     # (r=-0.37, t~11) and the render doubled the wheel shake.

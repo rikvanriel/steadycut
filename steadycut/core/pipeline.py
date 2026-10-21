@@ -129,18 +129,22 @@ def render_constant(spec: ClipSpec, dst: str | Path,
     return Path(dst)
 
 
-def track_far(video: str | Path) -> Traj:
+def track_far(video: str | Path, stride: int = 1) -> Traj:
     """Far-field ORB+RANSAC trajectory of a rendered clip, in memory."""
     from steadycut.stabilization.far_track import track
-    deltas, inl = track(str(video))
+    deltas, inl = track(str(video), stride=stride)
     return Traj(deltas=np.asarray(deltas, dtype=float),
                 inliers=np.asarray(inl, dtype=int))
 
 
 def gyro_pitch_per_frame(source: str | Path, t0: float, n: int,
                          fps: float | None = None,
-                         axis_map=None) -> np.ndarray:
+                         axis_map=None, stride: int = 1) -> np.ndarray:
     """Mean gyro pitch (deg per frame) in each frame interval from t0.
+
+    With stride > 1 the bins widen to cover stride frames each, matching a
+    strided tracker: bin i covers [t0 + i*stride, t0 + (i+1)*stride) frames.
+    stride=1 is exactly the old per-frame binning.
 
     The pitch column comes from the camera profile's axis map (X4 default).
     fps is probed from the source when not given -- deriving it from a module
@@ -159,15 +163,16 @@ def gyro_pitch_per_frame(source: str | Path, t0: float, n: int,
     imu = read_telemetry(str(source))
     out = []
     for i in range(n):
-        tc = t0 + (i + 0.5) / fps
-        m = (imu.time_s >= tc - 0.5 / fps) * (imu.time_s < tc + 0.5 / fps)
+        tc = t0 + (i * stride + stride / 2) / fps
+        hw = stride / 2 / fps
+        m = (imu.time_s >= tc - hw) * (imu.time_s < tc + hw)
         out.append(imu.gyro[m, col].mean() / fps if m.sum() else np.nan)
     return np.array(out)
 
 
 def measure_sync(spec: ClipSpec, lags_ms=range(-200, 61, 10),
-                workdir: str | Path | None = None,
-                pad_s: float = 10.0) -> SyncResult:
+                 workdir: str | Path | None = None,
+                 pad_s: float = 10.0, track_stride: int = 1) -> SyncResult:
     """Gyro-stamp offset for one file+window, returned -- not written.
 
     Renders a constant-framing baseline to a temp dir (kept only if workdir
@@ -187,25 +192,26 @@ def measure_sync(spec: ClipSpec, lags_ms=range(-200, 61, 10),
     tmp = Path(workdir) if workdir else Path(tempfile.mkdtemp())
     tmp.mkdir(parents=True, exist_ok=True)
     start = max(0.0, spec.start - pad_s)
+    duration = spec.duration + spec.start - start + pad_s
     # The scan renders a constant-framing baseline and tracks FAR-FIELD motion
     # to correlate against gyro: sphere assembly is irrelevant to that, and
     # the blend stitch is ~10x the cost of the legacy one at full sphere size.
     # Force legacy here so sync measurement does not pay for stitching it
     # cannot see. (Delivered-vs-raw gates still render the spec's own stitch.)
     from steadycut.render.stitch import StitchSpec as _SS
-    scan = replace(spec, start=start,
-                   duration=(spec.duration + spec.start - start + pad_s),
+    scan = replace(spec, start=start, duration=duration,
                    stitch=_SS(method="legacy"))
     video = tmp / "sync_raw.mp4"
     render_constant(scan, video)
-    traj = track_far(video)
+    traj = track_far(video, stride=track_stride)
     _, ppdy = plate_scale(scan.fov)
     dy = traj.deltas[:, 1] / ppdy  # deg per frame
     curve = []
     axis_map = scan.profile.axis_map if scan.profile is not None else None
     for lag in lags_ms:
         pr = gyro_pitch_per_frame(scan.source, scan.start + lag / 1000.0,
-                                  len(dy), axis_map=axis_map)
+                                  len(dy), axis_map=axis_map,
+                                  stride=track_stride)
         curve.append((float(lag), correlate(pr, dy)))
     best = max(curve, key=lambda kv: abs(kv[1]))
     r0 = dict(curve).get(0, float("nan"))

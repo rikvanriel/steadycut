@@ -21,11 +21,15 @@ def far_mask(h, w):
     m[int(y0*h):int(y1*h), int(x0*w):int(x1*w)] = 255
     return m
 
-def track(video):
+def track(video, stride: int = 1):
     # Streams frame pairs through the tracker: two frames alive at a time.
     # An earlier version decoded the whole clip to float32 first (150 frames
     # of 1280x960 = ~700MB plus ORB copies), which got the process OOM-killed
     # on a loaded box. Same estimates, ~50MB peak.
+    #
+    # stride > 1 matches every stride-th frame pair (motion over stride
+    # frames); the gyro bins must widen to match (gyro_pitch_per_frame
+    # stride). stride=1 is the old every-pair behaviour exactly.
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
         raise RuntimeError(f"cannot open {video}")
@@ -39,6 +43,9 @@ def track(video):
         ok, frame = cap.read()
         if not ok:
             break
+        idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+        if idx % stride:
+            continue  # decode only: ORB+match run on stride boundaries
         if (frame.shape[1], frame.shape[0]) != (W, H):
             frame = cv2.resize(frame, (W, H))
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
