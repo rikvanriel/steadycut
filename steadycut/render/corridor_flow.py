@@ -206,7 +206,7 @@ def dest_src_window(W, dest, src, ramp=12):
 
 
 def blend_scaled_flow(flow, alpha):
-    """Studio flow scaling: flow * (1 - alpha), only inside the blend.
+    """Scale the flow correction by the blend weight: flow * (1 - alpha).
 
     alpha is the A-side blend weight per pixel. Outside the transition
     (alpha 0 or 1) the correction is zero by construction, so a warp
@@ -221,7 +221,7 @@ def blend_scaled_flow(flow, alpha):
 
 
 def fuse_left_right_flow(flow_lr, flow_rl):
-    """Sign-consistent L/R flow fusion (Studio UpdateLeftRightFlows).
+    """Sign-consistent L/R flow fusion.
 
     Per component: where the left flow is nonnegative take the larger
     of (L, -R), otherwise the smaller. Disagreement collapses toward
@@ -235,8 +235,8 @@ def fuse_left_right_flow(flow_lr, flow_rl):
 
 
 def temporal_median_flow(flows):
-    """Temporal median across a deque of flow fields (Studio
-    getFilteredFlow). A single-frame outlier cannot survive the median.
+    """Temporal median across a deque of flow fields. A single-frame
+    outlier cannot survive the median.
     """
     stack = np.stack([np.asarray(f, dtype=np.float32) for f in flows])
     return np.median(stack, axis=0).astype(np.float32)

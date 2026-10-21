@@ -465,7 +465,7 @@ def parallax_budget(y0, y1, joint_w, h=1024, w=2048, h_min=0.5,
 
 
 def apply_trim(weight, rects, feather=FEATHER):
-    """weight: (H, W) float blend weight (1 = B). Zero B over trim rects
+    """weight: (H, W) float blend weight (1 = A). Zero B over trim rects
     with cosine-feathered edges. Returns the trimmed weight."""
     w = weight.copy().astype(float)
     yy, xx = np.mgrid[0:w.shape[0], 0:w.shape[1]].astype(float)

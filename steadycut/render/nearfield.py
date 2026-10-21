@@ -134,7 +134,7 @@ def residual_level(ea, eb, wgt, validA=None, validB=None, max_dn=8.0,
                    feather_frac=0.07, rows_frac=0.03, sigma_mid=6.0,
                    sigma_scene_frac=0.03, var_thresh=400.0,
                    gray_sat=15.0):
-    """Studio-style residual step removal at the cut (globalSeamLeveling).
+    """Residual step removal at the cut.
 
     Multiband softens a DC step into a wider gradient the eye still reads
     as a line on flat sky/snow (Mach bands); only equalization removes it.
@@ -418,7 +418,7 @@ def edge_flatten(ea, eb, wgt, validA=None, validB=None, max_dn=30.0,
 
 
 def multiband_merge(A, Bc, wgt, validA, validBc, bands=5):
-    """Studio-style blend: tone across octaves, detail at the cut.
+    """Pyramid blend: tone across octaves, detail at the cut.
 
     Partition masks over the union (each side wins where the other is
     blind — a weight-side mask alone leaves black ticks where the warp
@@ -453,7 +453,7 @@ def multiband_merge(A, Bc, wgt, validA, validBc, bands=5):
 
 def repair_spans(eqA, eqB, wgt, spans, fov_a=185.0, fov_b=183.5,
                  halfw=150, reroute=True, multiband=True):
-    """Merge eqA/eqB under weight wgt (1 = B) with spans repaired.
+    """Merge eqA/eqB under weight wgt (1 = A) with spans repaired.
 
     spans: list of (rect, dx, seam_x) with rect = (y0, y1, x0, x1) the
     detected B-span and dx the measured displacement (B-copy minus
@@ -464,7 +464,7 @@ def repair_spans(eqA, eqB, wgt, spans, fov_a=185.0, fov_b=183.5,
     routing, invalidating the seam placement (a fringe shown by the old
     cut hides behind the new one); the second route is cheap numpy.
     Falls back to the input weight when routing fails.
-    multiband: Studio-style octave blend over partition masks instead
+    multiband: octave blend over partition masks instead
     of the single-band ramp (kills the tone step, keeps detail).
     """
     cv2 = __import__("cv2")
