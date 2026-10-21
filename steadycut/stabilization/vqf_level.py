@@ -251,7 +251,7 @@ def resample_shifts(path_t, imu_t, shifts, start):
     """Shifts onto ControlPoint timestamps. path_t is CLIP-RELATIVE
     (imu_time_s - start + sync offset); imu_t is absolute. Mixing the
     clocks parks every point left of xp[0] and applies one constant
-    from before the window (review R2 B1) — subtract start here.
+    from before the window — subtract start here.
     """
     import numpy as _np
     pt = _np.asarray(path_t, float)

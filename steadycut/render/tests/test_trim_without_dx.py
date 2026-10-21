@@ -1,4 +1,4 @@
-"""Trim-without-dx guards (verdict t_1029c652): in-joint fraction,
+"""Trim-without-dx guards: in-joint fraction,
 mask agreement, both-seam routing, signed color gate, mixed-row flow.
 """
 import numpy as np

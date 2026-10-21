@@ -778,7 +778,8 @@ def sphere_delta_to_lens(spec: StitchSpec, delta, size=2880) -> tuple:
     delta: float32 (h, w, 3) sphere still (e.g. flow-corrected B minus B).
     Inverse-samples through lens_to_sphere so the correction rides the
     existing bake blends (same mechanism as leveling) instead of requiring
-    an own-remap sphere bake (Phase 6 verdict: unjustified). Returns
+    an own-remap sphere bake (unneeded: the existing blends already
+    carry it). Returns
     (pos_frame, neg_frame) uint8 paths; zero delta yields empty frames.
     """
     import numpy as np
