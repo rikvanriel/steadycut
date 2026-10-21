@@ -54,6 +54,7 @@ class StitchSpec:
     method: str = "legacy"
     lens_fov_a: float = LENS_FOV_A
     lens_fov_b: float = LENS_FOV_B
+    lens_centers: tuple | None = None  # ((cx0,cy0),(cx1,cy1)) optical centers
     ramp_deg: float = RAMP_DEG
     deflare_poly: tuple = DEFLARE_POLY
     deflare_scale: tuple | None = None  # None = measure per clip (A, B);
@@ -423,7 +424,8 @@ def sphere_still(source: str, spec: StitchSpec, t: float = 5.0,
     g = gain or measure_gain(source, t)  # stills match the bake
     with tempfile.TemporaryDirectory() as tmp:
         ea, eb = lens_equirects(source, spec, g, t, tmp, sphere_size,
-                                keep_dir=keep_equirects_dir)
+                                keep_dir=keep_equirects_dir,
+                                lens_centers=spec.lens_centers)
         wgt, _ = blend_weight(w, h, spec.ramp_deg, spec.lens_fov_a,
                                 spec.lens_fov_b)
         if getattr(spec, "seam", "meridian") == "routed":
