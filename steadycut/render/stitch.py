@@ -17,13 +17,15 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Per-lens full FOVs from the X4 makernotes (182.15 / 180.58), the values the
-# FOVxramp bench settled: nominal per-lens FOV, not the 186 deg corridor
-# (wider buys blend width with rim pixels whose flare dominates the veil).
-LENS_FOV_A = 182.2
-LENS_FOV_B = 180.6
-# Blend ramp matched to the measured overlap (~8 px at nominal FOV): wide
-# enough to dissolve the cut, narrow enough to starve the veil.
+# Per-lens full FOVs: MEASURED effective values from the Studio
+# separation test (1.075/1.093), not the makernotes nominal
+# (182.15/180.58) which understates the rim by ~7% and doubles the
+# seams. FOVxramp bench settled the serving rule: wider buys blend
+# width with rim pixels whose flare dominates the veil.
+LENS_FOV_A = 195.9  # measured effective (Studio separation ratio
+LENS_FOV_B = 197.5  # 1.075/1.093); metadata nominal understates the rim
+# Blend ramp matched to the measured overlap (~32 deg at serving FOV):
+ # wide enough to dissolve the cut, narrow enough to starve the veil.
 RAMP_DEG = 4.0
 # Blue deflare polynomial, B excess vs normalized lens radius, fitted on
 # smooth-snow B-G (+6 center -> +13 rim, both lenses, R-G flat). Subtracted

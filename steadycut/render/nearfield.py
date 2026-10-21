@@ -80,7 +80,7 @@ def span_displacement(eqA, eqB, rect, min_dx=8, max_dx=150, max_dy=10):
     return float(med), n
 
 
-def lens_validity(h, w, fov_a=185.0, fov_b=183.5):
+def lens_validity(h, w, fov_a=195.9, fov_b=197.5):
     """Per-lens output-frame validity (axis A at x=w/2, B at x=0).
 
     Renders show pixels past the calibrated FOV (unrectified rim:
@@ -451,7 +451,7 @@ def multiband_merge(A, Bc, wgt, validA, validBc, bands=5):
     return np.clip(res, 0, 255).astype(np.uint8)
 
 
-def repair_spans(eqA, eqB, wgt, spans, fov_a=185.0, fov_b=183.5,
+def repair_spans(eqA, eqB, wgt, spans, fov_a=195.9, fov_b=197.5,
                  halfw=150, reroute=True, multiband=True):
     """Merge eqA/eqB under weight wgt (1 = A) with spans repaired.
 
@@ -607,7 +607,7 @@ def load_spans(path):
             for it in items]
 
 
-def auto_repair(eqA, eqB, wgt, fov_a=185.0, fov_b=183.5,
+def auto_repair(eqA, eqB, wgt, fov_a=195.9, fov_b=197.5,
                 seams=(512, 1536)):
     """Detect double spans and repair them; gated, cert-logged.
 

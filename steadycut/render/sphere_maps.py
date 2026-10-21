@@ -29,7 +29,7 @@ C = 1440.0  # lens center px (2880 frame)
 MASK_VERSION = "v2"
 
 
-def lens_geometry(w=2048, h=1024, fov_a=182.2, fov_b=180.6):
+def lens_geometry(w=2048, h=1024, fov_a=195.9, fov_b=197.5):
     """Per-pixel lens incidence + validity for both lenses.
 
     Returns dict with inc_a, inc_b (radians from each lens axis), valid_a,
@@ -53,7 +53,7 @@ def lens_geometry(w=2048, h=1024, fov_a=182.2, fov_b=180.6):
             "valid_b": valid_b, "yaw": np.arctan2(dx, dz)}
 
 
-def blend_weight(w=2048, h=1024, ramp_deg=4.0, fov_a=182.2, fov_b=180.6,
+def blend_weight(w=2048, h=1024, ramp_deg=4.0, fov_a=195.9, fov_b=197.5,
                  incidence_cap_deg=100.0):
     """Blend weight 0..1 (1 = lens A) + validity mask.
 
@@ -114,7 +114,7 @@ def lens_to_sphere(fov, size=2880, w=2048, h=1024, back=False):
     return sx, sy, valid
 
 
-def routed_weight(w=2048, h=1024, ramp_deg=4.0, fov_a=182.2, fov_b=180.6,
+def routed_weight(w=2048, h=1024, ramp_deg=4.0, fov_a=195.9, fov_b=197.5,
                   incidence_cap_deg=100.0, polylines=None, corridor_px=64):
     """Incidence weight gated by routed corridors (Task 3.2).
 
@@ -154,7 +154,7 @@ def routed_weight(w=2048, h=1024, ramp_deg=4.0, fov_a=182.2, fov_b=180.6,
     return wgt.astype(np.float32), valid
 
 
-def build_maps(w=2048, h=1024, fov_a=182.2, fov_b=180.6, feather_deg=3.0):
+def build_maps(w=2048, h=1024, fov_a=195.9, fov_b=197.5, feather_deg=3.0):
     """Per-lens fisheye remap tables + incidence weight (lifts select_source).
 
     Returns (map_a, map_b, weight, inc_a, inc_b) with maps as (mx, my)
@@ -197,7 +197,7 @@ def full_globe_ok(fov_a, fov_b, ramp_deg=4.0):
     return joint >= 0.0, joint
 
 
-def joint_valid_strip(seam_x, halfw, fov_a=185.0, fov_b=183.5, h=1024,
+def joint_valid_strip(seam_x, halfw, fov_a=195.9, fov_b=197.5, h=1024,
                       w=2048):
     """Joint-valid mask for a sphere-coordinate corridor strip, in V360
     OUTPUT frame (measured: track0/yaw0 centers output-1024, track1/yaw180

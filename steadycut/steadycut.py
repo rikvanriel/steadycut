@@ -445,7 +445,8 @@ def main(argv=None) -> int:
                 for seam in (512, 1536):
                     sA, sB, _ = corridor_pair(eqA, eqB, seam, 48)
                     flow = flow_strip(sA, sB)
-                    valid = joint_valid_strip(seam, 48)
+                    valid = joint_valid_strip(seam, 48, stitch.lens_fov_a,
+                                              stitch.lens_fov_b)
                     conf = flow_confidence(sA, sB, flow, valid=valid)
                     cov[str(seam)] = round(float(((conf > 0.5)
                                                   & valid).mean()), 4)

@@ -172,7 +172,7 @@ def flow_confidence(A, B, flow, win=9, valid=None):
     return conf.astype(np.float32)
 
 
-def joint_valid_strip(seam_x, halfw, fov_a=185.0, fov_b=183.5, h=1024,
+def joint_valid_strip(seam_x, halfw, fov_a=195.9, fov_b=197.5, h=1024,
                       w=2048):
     """Joint-valid mask for a sphere-coordinate corridor strip — moved to
     sphere_maps (analytic geometry's home); kept here as a re-export."""

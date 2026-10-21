@@ -67,7 +67,7 @@ def _gray(img):
 
 
 def find_duplicates(eqA, Bal, seams=SEAMS, halfw=HALFW,
-                    fov_a=185.0, fov_b=183.5):
+                    fov_a=195.9, fov_b=197.5):
     """Returns list of (y0, y1, x0, x1) trim rects in SHARED sphere coords:
     B spans shown twice must be invalidated. Empty = clean.
     eqA/Bal: full equirects (BGR uint8) in shared coords (v360 outputs
@@ -91,7 +91,7 @@ def find_duplicates(eqA, Bal, seams=SEAMS, halfw=HALFW,
 
 
 def find_duplicates_detailed(eqA, Bal, seams=SEAMS, halfw=HALFW,
-                             fov_a=185.0, fov_b=183.5):
+                             fov_a=195.9, fov_b=197.5):
     """find_duplicates with Span details (mutual, fwd, tx, disp,
     support). Zero behavior change to detection itself; the merge
     ANDs mutual across constituents. Callers needing rects keep
@@ -202,7 +202,7 @@ def _scan_band(gA, gB, cv2, jv, sx, x0s, tx, y0, y1,
 
 
 def find_duplicates_sift(eqA, eqB, seams=SEAMS, y_lo=0, y_hi=1024,
-                         fov_a=185.0, fov_b=183.5, min_dx=MIN_OFFSET,
+                         fov_a=195.9, fov_b=197.5, min_dx=MIN_OFFSET,
                          max_dx=150, max_dy=10, min_matches=3, dilate=16):
     """SIFT-correspondence duplicate spans. NCC plateaus on forest (every
     window matches everywhere ~0.8); descriptors punch through rim
@@ -504,7 +504,7 @@ def ramp_duplication(merged_gray, eqA_gray, eqB_gray, seam_x,
     return out
 
 
-def grow_rects(eqA, eqB, seeds, fov_a=185.0, fov_b=183.5,
+def grow_rects(eqA, eqB, seeds, fov_a=195.9, fov_b=197.5,
                reach=200, dup_floor=0.70):
     """Grow seeded copies into neighboring rows with sensitive bars (0.70:
     continuation of a known double) constrained by position prior (copy

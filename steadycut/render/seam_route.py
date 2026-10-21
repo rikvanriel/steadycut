@@ -28,7 +28,7 @@ def _texture(img):
     return cv2.blur(np.hypot(tx, ty), (5, 5))
 
 
-def route_seam(eqA, eqB, seam_x, halfw=64, fov_a=185.0, fov_b=183.5):
+def route_seam(eqA, eqB, seam_x, halfw=64, fov_a=195.9, fov_b=197.5):
     """Route one seam. eqA/eqB: full equirects (BGR uint8) in SHARED sphere
     coordinates — production B tracks (yaw=180) need NO roll: v360 yaw
     rotates the output image (measured: same lens at yaw180 lands exactly
@@ -78,7 +78,7 @@ def route_seam(eqA, eqB, seam_x, halfw=64, fov_a=185.0, fov_b=183.5):
 
 
 def route_both(eqA, eqB, seams=(512, 1536), halfw=64, width=2048,
-               fov_a=185.0, fov_b=183.5):
+               fov_a=195.9, fov_b=197.5):
     """Route each seam independently. Returns {seam_x: polyline}."""
     out = {}
     for s in seams:
