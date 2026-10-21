@@ -18,6 +18,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 
@@ -252,6 +253,16 @@ def main(argv=None) -> int:
     # 2. framing, by the policy for this mount. The policy owns the criterion
     #    and the way the pitch is derived; --pitch overrides both.
     policy = policy_for(a.framing)
+    # Stage timings stay as a permanent profile side effect: each mark
+    # prints the wall time of the stage that just finished, so the next
+    # long render reports where it went without a profiler attached.
+    _t_mark = [perf_counter()]
+    _timing = {}
+    def _mark(stage):
+        now = perf_counter()
+        _timing[stage] = round(now - _t_mark[0], 1)
+        _t_mark[0] = now
+        print(f"CLI| time {stage} {_timing[stage]:.1f}s")
     if policy is None:
         return refuse(f"no framing policy named {a.framing!r}",
                       f"known policies: {', '.join(policy_names())}")
@@ -319,6 +330,7 @@ def main(argv=None) -> int:
     print(f"CLI| framing pitch {pitch:.1f} "
           f"(policy {policy.name}, mount {policy.mount}, "
           f"follows {policy.follows})")
+    _mark("framing")
     corner = a.corner if a.corner is not None else policy.corner_hz or 0.15
     if corner != 0.15 or policy.corner_hz is not None:
         print(f"CLI| corner {corner} Hz"
@@ -526,6 +538,7 @@ def main(argv=None) -> int:
     spec = ClipSpec(source=a.source, start=a.start, duration=a.dur,
                     framing_pitch=pitch, fov=fov, size=size, profile=profile,
                     stitch=stitch)
+    _mark("stitch_setup")
 
     # 3. sync (same window; validated by residual later, not by a 2nd window).
     sync = measure_sync(spec, workdir=tmp / "sync")
@@ -543,6 +556,7 @@ def main(argv=None) -> int:
                     "offset_applied": offset_ms, "used": sync_used}
     print(f"CLI| sync lag {sync.lag_ms:.0f}ms r={sync.r_best:+.2f} "
           f"-> offset {offset_ms:+.0f}ms")
+    _mark("sync")
 
     # 4. gyro path + gravity levelling + render. Levelling is the static
     # roll offset the relative gyro path cannot see (it follows slow motion
@@ -668,6 +682,7 @@ def main(argv=None) -> int:
     except Exception as exc:
         return refuse(f"render failed ({exc})", "no clip claimed")
     print(f"CLI| wrote {out}")
+    _mark("path+bake")
 
     # 5. bounded 2D residual pass -- BEFORE the certificate, so the numbers
     #    describe the file that is actually delivered rather than the gyro
@@ -772,6 +787,8 @@ def main(argv=None) -> int:
     cert["corner_hz"] = corner
     cert["yaw_corner_hz"] = yaw_corner  # None = legacy single-tau path
     cert["yaw_adaptive_hz"] = yaw_adaptive
+    _mark("validate+2d")
+    cert["timing"] = _timing
     cert_path = out.with_suffix(".cert.json")
     cert_path.write_text(json.dumps(cert, indent=1, default=str))
     print(f"CLI| certificate {cert_path}")
