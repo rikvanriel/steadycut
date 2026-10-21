@@ -238,7 +238,8 @@ def measure_gain(source: str, t: float = 5.0) -> tuple:
     """Per-clip gain (lens B toward A), cached per file+time.
 
     Snow-first: median over neutral-bright mid-field pixels (the same
-    illuminant as the seam content). Rim-annulus fallback when no snow:
+    illuminant as the seam content), i.e. overlap-mean gain matching in
+    the Brown & Lowe sense (see docs/sources.md). Rim-annulus fallback when no snow:
     rim gain measured on edges hurts snow, and AE drifts across a clip,
     so the cache key carries the measurement time and callers pass the
     render time, not a fixed 5 s. Neutral scalar for snow (hue matches);

@@ -148,6 +148,7 @@ def flow_strip(A, B, preset=None):
     """Dense A->B flow (float32, px). B_corrected(x) = B(x + flow(x))."""
     cv2 = __import__("cv2")
     dis = cv2.DISOpticalFlow_create(preset or cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
+    # DIS = Dense Inverse Search (Kroeger et al. 2016, see docs/sources.md).
     gA = cv2.cvtColor(A, cv2.COLOR_BGR2GRAY)
     gB = cv2.cvtColor(B, cv2.COLOR_BGR2GRAY)
     flow = dis.calc(gA, gB, None)

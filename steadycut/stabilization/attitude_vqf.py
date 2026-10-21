@@ -7,7 +7,8 @@ mirrored, wrong numbers that do not raise, because a sign or handedness mistake
 in a rotation or an axis permutation still runs to completion and still looks
 plausible. A left-handed axis permutation in particular will pass a suite that
 only compares against whatever the new code happens to emit. The `vqf` package
-is the reference implementation of Laidig & Seel's VQF (Information Fusion 2023)
+is the reference implementation of Laidig & Seel's VQF (Information Fusion
+2023, https://doi.org/10.1016/j.inffus.2022.10.014)
 and is the algorithm Gyroflow ships as its default, so there is no reason to keep
 re-deriving it.
 
