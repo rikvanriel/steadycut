@@ -55,7 +55,7 @@ def test_stitch_spec_defaults_are_bench_geometry():
     """Geometry defaults are the bench winner; the METHOD default is legacy
     for cost (the blend bake is minutes per window), so blend is opt-in."""
     s = StitchSpec()
-    assert (s.lens_fov_a, s.lens_fov_b, s.ramp_deg) == (182.2, 180.6, 4.0)
+    assert (s.lens_fov_a, s.lens_fov_b, s.ramp_deg) == (195.9, 197.5, 4.0)
     assert s.method == "legacy"
     assert StitchSpec(method="blend").method == "blend"
     assert s.gain is None  # measured per clip, never carried

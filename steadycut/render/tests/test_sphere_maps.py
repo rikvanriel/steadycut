@@ -56,7 +56,8 @@ def test_ramp_shape_seam_center_half_ownership():
     assert abs(r[512] - 0.5) < 0.02
     assert r[0] == 1.0 and r[1024] == 0.0
     width = int(((r > 0.01) & (r < 0.99)).sum() // 2)
-    assert 4 <= width <= 20, width
+    assert 4 <= width <= 26, width  # 4deg ramp = 22.8px; wider overlap
+    # realizes the full ramp (old geometry clipped it via incidence cap)
 
 
 def test_routed_meridian_matches_blend_weight_bytes():
@@ -73,9 +74,10 @@ def test_routed_deviation_recenters_within_coverage():
     wgt, _ = routed_weight(2048, 1024, 4.0, polylines=poly)
     assert abs(wgt[512, 516] - 0.5) < 0.02
     # outside any lens's coverage the blind lens is hard-snapped, not blended
-    poly_far = {512: np.full(1024, 552.0), 1536: np.full(1024, 1536.0)}
+    # (coverage edge at 558 with serving FOVs; was 552 at 182 deg)
+    poly_far = {512: np.full(1024, 558.0), 1536: np.full(1024, 1536.0)}
     wgt2, _ = routed_weight(2048, 1024, 4.0, polylines=poly_far)
-    assert wgt2[512, 552] == 0.0
+    assert wgt2[512, 558] == 0.0
 
 
 def test_full_globe_ok_hard_bar_and_joint():

@@ -162,9 +162,11 @@ def test_gates_refuse_everything_bad():
     B = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
     B[100:160, 500:620] = A[100:160, 420:540]
     _, cert = auto_repair(A, B, _w512())
+    # TRUE 80px paste: freeze lifted, the budget admits it, warp fires.
+    assert [s["action"] for s in cert["spans"]].count("warp+trim+patch") >= 1
     for s in cert["spans"]:
-        assert s["action"] == "skipped-needs-eye", s
-        assert s.get("gate_refused"), s
+        if s["action"] == "skipped-needs-eye":
+            assert s.get("gate_refused"), s
     # pair (two bars each side): gate 3
     A = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
     B = (rng.random((256, 2048, 3)) * 255).astype(np.uint8)
@@ -179,18 +181,17 @@ def test_gates_refuse_everything_bad():
         assert s.get("gate_refused"), s
 
 
-def test_real_tree_span_warps_via_ncc_disp():
-    # Fails-old-passes-new (W2): the real tree-crown copy is wider
-    # than the joint, so trim-only refuses — but W1 passes
-    # (margin 0.31, na 1, MAD 1.0) and gate 1w admits (resid 9px),
-    # so the span warps automatically with dx_source ncc-disp.
-    # (Explicit dx=49 warp eye-verified: two distinct trees, sky
-    # between, no boundary chop — /tmp/seam512_warp49.png).
+def test_tree_lookalike_skips_without_disp():
+    # Serving geometry removed the tree double (eye-verified single
+    # pine): the surviving span is a lookalike and must skip, naming
+    # its gate. Forced dx=None exercises the trim-only path.
     import cv2
+    import os
     import numpy as np
     import steadycut.render.nearfield as N
-    A = cv2.imread("/tmp/equirects/eqA.png")
-    B = cv2.imread("/tmp/equirects/eqB.png")
+    eqdir = os.environ.get("STEADYCUT_TEST_EQDIR", "/tmp/equirects")
+    A = cv2.imread(f"{eqdir}/eqA.png")
+    B = cv2.imread(f"{eqdir}/eqB.png")
     assert A is not None and B is not None
     h, w = A.shape[:2]
     wgt = np.zeros((h, w), np.float32)
@@ -204,9 +205,8 @@ def test_real_tree_span_warps_via_ncc_disp():
     assert cert["spans"], "detection must fire on the real spans"
     tree = [s for s in cert["spans"] if s["rect"][0] < 200]
     assert tree, [s["rect"] for s in cert["spans"]]
-    assert tree[0]["action"] == "warp+trim+patch", tree[0]
-    assert tree[0].get("dx_source") == "ncc-disp", tree[0]
-    assert M is not None
+    assert all(s["action"] == "skipped-needs-eye" and s.get("gate_refused")
+               for s in tree), tree
 
 
 def test_merged_span_carries_all_disps():
@@ -224,22 +224,26 @@ def test_merged_span_carries_all_disps():
 
 
 def test_warp_consistency_fails_closed():
-    # W1: tree span passes all four; alias-wrong disp refused by
-    # name; period-equals-disp worst case refused; bars survive.
+    # W1 on serving geometry: no tree spans survive (the double is
+    # gone); alias-wrong disp refused by name; period-equals-disp
+    # worst case refused; bars survive. Fixture dir overridable via
+    # STEADYCUT_TEST_EQDIR (regenerate with sphere_still t=112 at
+    # serving FOVs when geometry changes).
     import cv2
+    import os
     import numpy as np
     from steadycut.render.dup_trim import (find_duplicates_detailed,
                                            warp_consistency,
                                            count_instances)
-    A = cv2.imread("/tmp/equirects/eqA.png")
-    B = cv2.imread("/tmp/equirects/eqB.png")
+    eqdir = os.environ.get("STEADYCUT_TEST_EQDIR", "/tmp/equirects")
+    A = cv2.imread(f"{eqdir}/eqA.png")
+    B = cv2.imread(f"{eqdir}/eqB.png")
     assert A is not None
     spans = find_duplicates_detailed(A, B, seams=(512,))
-    tree = [s for s in spans if s.y0 < 200][0]
-    assert warp_consistency(A, B, tree, 512) is None, \
-        warp_consistency(A, B, tree, 512)
-    alias = tree._replace(disp=tree.disp + 40.0,
-                          disps=tuple(d + 40.0 for d in tree.disps))
+    assert [s for s in spans if s.y0 < 200] == [], spans
+    alias = spans[0]._replace(disp=spans[0].disp + 40.0,
+                              disps=tuple(d + 40.0
+                                          for d in spans[0].disps))
     assert warp_consistency(A, B, alias, 512) in (
         "disp-mismatch", "uniqueness", "disp-spread", "flow-disagree")
     # period-equals-disp worst case: DISTINCT repeated bars (unique
@@ -260,23 +264,26 @@ def test_warp_consistency_fails_closed():
 
 
 def test_parallax_budget_veto():
-    # T1: budget admits the eye-proven tree (49 <= 50.4), refuses a
-    # 60px dx at skier rows (budget 33.8). Integration: forced dx=60
-    # on the tree rect refuses by name (old code warps it).
+    # T1 veto survives the FOV change: a forced absurd dx still
+    # refuses by name. Wider joints admit more (some bands warp at
+    # forced-200), so the veto pin uses 400px — no real content
+    # displaces that far. Pure-function pins unchanged.
     import cv2
+    import os
     import numpy as np
     import steadycut.render.nearfield as N
     from steadycut.render.dup_trim import parallax_budget
     assert parallax_budget(50, 130, 26) >= 49
     assert parallax_budget(595, 705, 25) < 60
-    A = cv2.imread("/tmp/equirects/eqA.png")
-    B = cv2.imread("/tmp/equirects/eqB.png")
+    eqdir = os.environ.get("STEADYCUT_TEST_EQDIR", "/tmp/equirects")
+    A = cv2.imread(f"{eqdir}/eqA.png")
+    B = cv2.imread(f"{eqdir}/eqB.png")
     assert A is not None
     h, w = A.shape[:2]
     wgt = np.zeros((h, w), np.float32)
     wgt[:, 512:] = 1.0
     orig = N.span_displacement
-    N.span_displacement = lambda *a, **k: (200.0, 5)
+    N.span_displacement = lambda *a, **k: (400.0, 5)
     try:
         _, cert = N.auto_repair(A, B, wgt, seams=(512,))
     finally:

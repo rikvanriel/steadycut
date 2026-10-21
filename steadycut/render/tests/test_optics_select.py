@@ -90,4 +90,4 @@ def test_fresh_hole_falls_back_to_bench(cfg, fake_frames, monkeypatch):
     monkeypatch.setattr(S, "fit", lambda A, B: (170.0, 170.0, (0.1, 5.0), []))
     prof, fresh = S.select_optics("clip.insv", "S5", "v1", True)
     assert fresh is True and prof["id"] is None
-    assert (prof["fov_a"], prof["fov_b"]) == (182.2, 180.6)
+    assert (prof["fov_a"], prof["fov_b"]) == (195.9, 197.5)

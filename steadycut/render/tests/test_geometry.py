@@ -24,8 +24,8 @@ def test_blend_stitch_graph_is_wired() -> None:
     fg = _filtergraph(geometry=X4.lens,
                       stitch=StitchSpec(method="blend", gain=(1.0, 1.0, 1.0)))
     # Two-pass blend: per-lens equirect with calibrated FOVs, maskedmerge.
-    assert "v360=input=fisheye:output=e:ih_fov=182.2" in fg
-    assert "v360=input=fisheye:output=e:ih_fov=180.6" in fg
+    assert "v360=input=fisheye:output=e:ih_fov=195.9" in fg
+    assert "v360=input=fisheye:output=e:ih_fov=197.5" in fg
     assert "maskedmerge" in fg
     assert "reset_rot=1" in fg
 
