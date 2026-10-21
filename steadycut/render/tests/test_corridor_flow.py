@@ -136,3 +136,21 @@ def test_temporal_median_flow_rejects_outlier():
     from steadycut.render.corridor_flow import temporal_median_flow
     flows = [np.full((2, 2, 2), v, np.float32) for v in (4.0, 5.0, 100.0)]
     assert np.all(temporal_median_flow(flows) == 5.0)
+
+
+def test_compose_alpha_scales_correction():
+    # A-side alpha: full correction mid-blend, none outside it.
+    from steadycut.render.corridor_flow import compose_corrected_B
+    H, Wd = 64, 512
+    B = np.zeros((H, Wd, 3), np.uint8)
+    B[:, 262:] = 200
+    flow = np.zeros((H, 128, 2), np.float32)
+    flow[:, :] = (40.0, 0.0)
+    conf = np.ones((H, 128), np.float32)
+    alpha = np.zeros((H, 128), np.float32)
+    alpha[:, 48:80] = np.linspace(0.05, 0.95, 32, dtype=np.float32)
+    out = compose_corrected_B(B, 256, 64, flow, conf, alpha=alpha)
+    edge = out[:, 256 - 64:256 - 48].astype(float)
+    mid = out[:, 256 - 8:256 + 8].astype(float)
+    assert np.abs(edge - B[:, 256 - 64:256 - 48].astype(float)).mean() < 1.0
+    assert np.abs(mid.mean() - 200) < 60  # B content pulled in
