@@ -595,7 +595,8 @@ def tone_fields(source: str, spec, gain: tuple, t: float,
     import tempfile
     cv2 = __import__("cv2")
     key_src = (f"{Path(source).resolve()}|{Path(source).stat().st_size}"
-               f"|{round(t, 1)}|tone")
+               f"|{round(t, 1)}|tone|{spec.lens_fov_a:g}_{spec.lens_fov_b:g}"
+               f"|ramp{spec.ramp_deg:g}|cen{spec.lens_centers}")
     try:
         db = None
         cache = cache_dir() / "gains.json"
