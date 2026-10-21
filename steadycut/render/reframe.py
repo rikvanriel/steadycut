@@ -316,13 +316,14 @@ def render(
                                 t=start if start is not None else 5.0)
         gain_measured = stitch.gain is None
         # static tone fields (edge+residual, rep frame): no per-frame cost,
-        # skipped on dry runs (measurement reads pixels; dry runs print)
+        # skipped on dry runs (measurement reads pixels; dry runs print).
+        # B2-video (3,8] stage: fit at the window START (delivery t), the
+        # same cache key the blend block measured on — one fit, used twice.
         tone = None
         tone_info = None
         if not dry_run:
             from steadycut.render.stitch import tone_fields
-            t_rep = (start if start is not None else 5.0) + (
-                duration / 2 if duration else 0.0)
+            t_rep = start if start is not None else 5.0
             tone, tone_info = tone_fields(str(source), stitch, gain,
                                           t_rep, sphere_size)
         sfg, mask_path = sphere_filtergraph(stitch, gain, sphere_size,

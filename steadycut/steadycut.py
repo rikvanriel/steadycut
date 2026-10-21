@@ -392,6 +392,24 @@ def main(argv=None) -> int:
                                      spans=a.repair_spans)
             else:
                 still = rstill
+            # V2 = B2-video (3,8] branch: fit tone at the delivery window
+            # start (not mid-window) so the bake and this measurement
+            # share one cached fit; then measure the step on the
+            # POST-LOBE applied frame. Order: tone-fit -> measure ->
+            # level -> bake. STEP_LIMIT unchanged. On tone failure the
+            # probe falls back to the uncorrected frame with a note.
+            tone = None
+            try:
+                from steadycut.render.stitch import (measure_gain,
+                                                     tone_fields)
+                gain_blend = measure_gain(a.source, float(a.start))
+                tone, tone_info = tone_fields(a.source, stitch,
+                                              gain_blend, float(a.start))
+                cert["tone"] = {"t_rep": float(a.start), "info": tone_info,
+                                "fit_seam": "meridian (d3 open)"}
+            except Exception as exc:
+                cert["tone"] = {"t_rep": None,
+                                "reason": f"tone fit failed: {exc}"}
             # d1: measure the step on the applied single-band video frame
             # at the delivered seam (routed polyline when routed), not on
             # the multiband still at the meridian. STEP_LIMIT unchanged.
@@ -408,12 +426,25 @@ def main(argv=None) -> int:
                 if polys:
                     from steadycut.render.seam_route import route_weight
                     wgt = route_weight(polys, wgt)
+                eqA = cv2.imread(str(eqdir / "eqA.png")).astype(np.float32)
+                eqB = cv2.imread(str(eqdir / "eqB.png")).astype(np.float32)
+                if tone is not None:
+                    # Mirror the filtergraph: A + posA - negA per lens.
+                    tA, tAn, tB, tBn = (
+                        cv2.imread(str(p),
+                                   cv2.IMREAD_UNCHANGED).astype(np.float32)
+                        for p in tone)
+                    eqA = np.clip(eqA + tA - tAn, 0, 255)
+                    eqB = np.clip(eqB + tB - tBn, 0, 255)
+                    smeared_tone = "post-lobe"
+                else:
+                    smeared_tone = "pre-lobe(tone-failed)"
                 steps, _merged = video_step_probe(
-                    cv2.imread(str(eqdir / "eqA.png")),
-                    cv2.imread(str(eqdir / "eqB.png")), wgt,
+                    eqA.astype(np.uint8), eqB.astype(np.uint8), wgt,
                     polylines=polys)
-                smeared = "video-singleband/routed" if polys else \
-                    "video-singleband/meridian"
+                smeared = (f"video-singleband/{smeared_tone}/routed"
+                           if polys else
+                           f"video-singleband/{smeared_tone}/meridian")
             except Exception as exc:
                 steps = measure_step(still)
                 smeared = f"multiband-meridian-fallback ({exc})"
