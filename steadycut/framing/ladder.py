@@ -231,3 +231,54 @@ def solve(source, start: float, search, duration: float = 3.0,
     return pitch, {"edges": edges, "bracketed": straddled,
                    "usable": not reason, "criterion": search.label,
                    "target": search.target, "reason": reason}
+
+
+# The gravity fallback is deliberately NARROW: it fires only when the ladder
+# reports unusable (no wearer mass to find, e.g. a chest mount or a window
+# like May19 with no helmet in frame), and it commands a LEVEL view, not a
+# preferred one. No down-bias is fitted: mtb21/jan26 suggest -4..-5 deg but
+# May19 suggests 0, and two windows cannot fix a constant -- pure level is
+# always usable, a fitted bias is sometimes wrong. The window is the ladder's
+# own (start, 3 s), never the clip median: on May19 the 3 s tilt reads -0.4
+# (eye-good) while the 30 s median reads -25.1 (the head moved), so a clip
+# median would frame a past pose.
+GRAVITY_NORM_LO, GRAVITY_NORM_HI = 8.0, 11.5
+FALLBACK_WINDOW_S = 3.0
+
+
+def gravity_fallback(source, start: float, profile,
+                     duration: float = FALLBACK_WINDOW_S):
+    """Level pitch from the accelerometer when the ladder finds nothing.
+
+    Returns (pitch, info): `info["usable"]` False means gravity cannot be
+    trusted on this window either (|g| far from 9.81: sustained maneuver,
+    freefall), and the caller should refuse rather than guess. Pitch is the
+    negated forward tilt: a camera pitched down reads positive tilt, while
+    framing pitch counts down as negative.
+    """
+    import numpy as np
+
+    from steadycut.ingest.telemetry import read_telemetry
+    from steadycut.stabilization.level import tilt_from_gravity
+
+    info = {"layer": "gravity-fallback", "usable": False, "reason": None}
+    try:
+        imu = read_telemetry(str(source), profile=profile)
+    except Exception as exc:
+        info["reason"] = f"no telemetry ({exc})"
+        return None, info
+    m = (imu.time_s >= start) & (imu.time_s < start + duration)
+    if not m.any():
+        info["reason"] = "no IMU samples in the fallback window"
+        return None, info
+    g = np.median(imu.accel[m], axis=0)
+    g_norm = float(np.linalg.norm(g))
+    info["g_norm"] = g_norm
+    if not (GRAVITY_NORM_LO <= g_norm <= GRAVITY_NORM_HI):
+        info["reason"] = (f"|g| median {g_norm:.2f} outside "
+                          f"{GRAVITY_NORM_LO:.1f}..{GRAVITY_NORM_HI:.1f}: "
+                          f"sustained maneuver, gravity untrusted")
+        return None, info
+    tilt, _ = tilt_from_gravity(g, profile.axis_map)
+    info["tilt_deg"] = float(tilt)
+    return float(-tilt), {**info, "usable": True}

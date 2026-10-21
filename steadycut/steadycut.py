@@ -273,23 +273,41 @@ def main(argv=None) -> int:
         # A policy's search is normally a fixed PitchSearch, but one whose
         # criterion needs something per RECORDING -- a fitted ground cue -- is
         # registered as a factory taking the source. Resolve it here, once the
-        # source is known, and refuse plainly when the factory returns nothing:
-        # a cue that was never fitted is a missing input, not a pitch to guess.
+        # source is known, and fall back to gravity when the factory returns
+        # nothing: a cue that was never fitted is a missing input, but a
+        # level view is still better than no video.
         search = policy.search(a.source) if callable(policy.search) else policy.search
         if search is None:
-            return refuse(f"{policy.name} needs something fitted to THIS "
-                          f"recording and there is none", policy.hint)
-        try:
-            pitch, info = ladder.solve(a.source, a.start, search,
-                                       workdir=tmp / "framing")
-        except Exception as exc:
-            return refuse(f"{policy.name} framing failed ({exc})", policy.hint)
-        if not info.get("usable", False):
-            return refuse(info.get("reason")
-                          or f"{policy.name} could not measure a framing pitch",
-                          policy.hint)
-        cert["framing"] = {"pitch": pitch, "manual": False,
-                           "policy": policy.name, "mount": policy.mount, **info}
+            pitch, info = ladder.gravity_fallback(a.source, a.start, profile)
+            if pitch is None:
+                return refuse(f"{policy.name} needs something fitted to THIS "
+                              f"recording and there is none; gravity fallback "
+                              f"also unusable ({info.get('reason')})",
+                              policy.hint)
+            cert["framing"] = {"pitch": pitch, "manual": False,
+                               "policy": policy.name, "mount": policy.mount,
+                               "note": (f"{policy.name} has no fitted cue "
+                                        f"for this recording"),
+                               **info}
+        else:
+            try:
+                pitch, info = ladder.solve(a.source, a.start, search,
+                                           workdir=tmp / "framing")
+            except Exception as exc:
+                pitch, info = None, {
+                    "usable": False,
+                    "reason": f"{policy.name} framing failed ({exc})"}
+            if pitch is None or not info.get("usable", False):
+                ladder_reason = info.get("reason") or policy.name
+                pitch, info = ladder.gravity_fallback(a.source, a.start,
+                                                      profile)
+                if pitch is None:
+                    return refuse(f"{ladder_reason}; gravity fallback also "
+                                  f"unusable ({info.get('reason')})",
+                                  policy.hint)
+            cert["framing"] = {"pitch": pitch, "manual": False,
+                               "policy": policy.name, "mount": policy.mount,
+                               **info}
     elif policy.pitch is not None:
         pitch = policy.pitch
         cert["framing"] = {"pitch": pitch, "manual": False,
