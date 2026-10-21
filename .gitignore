@@ -10,6 +10,7 @@ dist/
 # renders and analysis artifacts (instruments write these freely)
 *.mp4
 *.png
+!steadycut/render/tests/data/*.png
 *.cert.json
 *.npy
 

@@ -189,7 +189,9 @@ def test_tree_lookalike_skips_without_disp():
     import os
     import numpy as np
     import steadycut.render.nearfield as N
-    eqdir = os.environ.get("STEADYCUT_TEST_EQDIR", "/tmp/equirects")
+    from pathlib import Path as _P
+    eqdir = os.environ.get("STEADYCUT_TEST_EQDIR",
+                           str(_P(__file__).parent / "data"))
     A = cv2.imread(f"{eqdir}/eqA.png")
     B = cv2.imread(f"{eqdir}/eqB.png")
     assert A is not None and B is not None
@@ -226,16 +228,19 @@ def test_merged_span_carries_all_disps():
 def test_warp_consistency_fails_closed():
     # W1 on serving geometry: no tree spans survive (the double is
     # gone); alias-wrong disp refused by name; period-equals-disp
-    # worst case refused; bars survive. Fixture dir overridable via
-    # STEADYCUT_TEST_EQDIR (regenerate with sphere_still t=112 at
-    # serving FOVs when geometry changes).
+    # worst case refused; bars survive. Fixtures ship in tests/data
+    # (Jan26 t=112 at serving FOVs); override dir via
+    # STEADYCUT_TEST_EQDIR to regenerate (sphere_still t=112) when
+    # geometry changes.
     import cv2
     import os
     import numpy as np
     from steadycut.render.dup_trim import (find_duplicates_detailed,
                                            warp_consistency,
                                            count_instances)
-    eqdir = os.environ.get("STEADYCUT_TEST_EQDIR", "/tmp/equirects")
+    from pathlib import Path as _P
+    eqdir = os.environ.get("STEADYCUT_TEST_EQDIR",
+                           str(_P(__file__).parent / "data"))
     A = cv2.imread(f"{eqdir}/eqA.png")
     B = cv2.imread(f"{eqdir}/eqB.png")
     assert A is not None
@@ -275,7 +280,9 @@ def test_parallax_budget_veto():
     from steadycut.render.dup_trim import parallax_budget
     assert parallax_budget(50, 130, 26) >= 49
     assert parallax_budget(595, 705, 25) < 60
-    eqdir = os.environ.get("STEADYCUT_TEST_EQDIR", "/tmp/equirects")
+    from pathlib import Path as _P
+    eqdir = os.environ.get("STEADYCUT_TEST_EQDIR",
+                           str(_P(__file__).parent / "data"))
     A = cv2.imread(f"{eqdir}/eqA.png")
     B = cv2.imread(f"{eqdir}/eqB.png")
     assert A is not None

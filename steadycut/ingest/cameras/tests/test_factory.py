@@ -1,11 +1,18 @@
 """factory.py pins: layout decoded from Jan26 file's known values."""
+import os
+import pytest
 from steadycut.ingest.cameras.factory import lens_circle, lens_quat
 
-SRC = ('/backup/insta360/VID_20260126_144450_00_010-Original/'
-       'VID_20260126_144450_00_010.insv')
+SRC = os.environ.get(
+    "STEADYCUT_TEST_INSV",
+    ('/backup/insta360/VID_20260126_144450_00_010-Original/'
+     'VID_20260126_144450_00_010.insv'))
 
 
 def test_factory_layout_pins():
+    if not os.path.exists(SRC):
+        pytest.skip(f"needs Insta360 fixture file: {SRC} "
+                    "(set STEADYCUT_TEST_INSV to override)")
     from steadycut.ingest.cameras.factory import factory_geometry
     g = factory_geometry(SRC)
     assert g['serial'] == 'IBMYA2410M3EB5'
