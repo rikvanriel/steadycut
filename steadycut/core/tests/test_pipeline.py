@@ -38,6 +38,29 @@ def test_correlate_finds_lag_and_ignores_nan() -> None:
     assert math.isnan(correlate(np.ones(20), np.ones(20)))  # flat is NaN
 
 
+def test_correlate_weights_mute_a_loud_lying_stretch() -> None:
+    # First half: y matches x (few inliers). Second half: y is loud and
+    # unrelated (many samples, zero inliers -- near-field mush the matcher
+    # could not lock). Unweighted lets the loud half vote; weighted mutes
+    # it and reads the honest half.
+    t = np.arange(200) / 10.0
+    a = np.sin(t)
+    y = np.sin(t)
+    y[100:] = 10 * np.sin(3 * t[100:] + 1.0)
+    w = np.ones(200)
+    w[100:] = 0
+    assert correlate(a, y) < 0.9
+    assert correlate(a, y, w=w) > 0.999
+    assert math.isnan(correlate(a, y, w=np.zeros(200)))  # nothing votes: NaN
+
+
+def test_correlate_none_weights_are_the_old_path() -> None:
+    rng = np.random.default_rng(0)
+    a = rng.normal(size=50)
+    b = 2 * a + 1
+    assert correlate(a, b) == correlate(a, b, w=None)
+
+
 def test_accumulate_and_bounce() -> None:
     d = np.zeros((10, 3))
     d[:, 1] = 2.0

@@ -105,15 +105,32 @@ def accumulate(traj: Traj) -> np.ndarray:
     return pos
 
 
-def correlate(a: np.ndarray, b: np.ndarray) -> float:
-    """Finite-safe Pearson r; NaN where either side is missing or flat."""
+def correlate(a: np.ndarray, b: np.ndarray,
+              w: np.ndarray | None = None) -> float:
+    """Finite-safe Pearson r; NaN where either side is missing or flat.
+
+    With weights (per-interval inlier counts), a weighted Pearson: weak
+    stretches stop voting instead of dragging the peak. w=None is exactly
+    the old unweighted behaviour.
+    """
     m = np.isfinite(a) * np.isfinite(b)
+    if w is not None:
+        m = m * np.isfinite(w) * (np.asarray(w) > 0)
     if m.sum() < 8:
         return float("nan")
     x, y = a[m], b[m]
     if x.std() == 0 or y.std() == 0:
         return float("nan")
-    return float(np.corrcoef(x, y)[0, 1])
+    if w is None:
+        return float(np.corrcoef(x, y)[0, 1])
+    wv = np.asarray(w[m], dtype=float)
+    wv /= wv.sum()
+    xm, ym = (wv * x).sum(), (wv * y).sum()
+    cov = (wv * (x - xm) * (y - ym)).sum()
+    var = (wv * (x - xm) ** 2).sum() * (wv * (y - ym) ** 2).sum()
+    if var <= 0:
+        return float("nan")
+    return float(cov / np.sqrt(var))
 
 
 def render_constant(spec: ClipSpec, dst: str | Path,
@@ -212,7 +229,7 @@ def measure_sync(spec: ClipSpec, lags_ms=range(-200, 61, 10),
         pr = gyro_pitch_per_frame(scan.source, scan.start + lag / 1000.0,
                                   len(dy), axis_map=axis_map,
                                   stride=track_stride)
-        curve.append((float(lag), correlate(pr, dy)))
+        curve.append((float(lag), correlate(pr, dy, w=traj.inliers)))
     best = max(curve, key=lambda kv: abs(kv[1]))
     r0 = dict(curve).get(0, float("nan"))
     return SyncResult(lag_ms=best[0], r_best=best[1], r_at_zero=r0,
