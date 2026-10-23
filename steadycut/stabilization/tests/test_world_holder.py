@@ -79,6 +79,11 @@ def test_knock_engages_and_holds_last_good():
     # just engage. A pitch-only freeze leaves heading/roll touring here.
     hold = (t >= 70) & (t < 130)
     assert O.forward_elevation(qt[hold]).std() < 3.0
+    # Last-good means pre-knock: the frozen view must read the riding
+    # elevation, not the engagement edge (which already carries whip --
+    # freezing at the edge is what delivered the Dutch angle).
+    pre = np.median(O.forward_elevation(q[(t >= 5) & (t < 18)]))
+    assert abs(O.forward_elevation(qt[hold]).mean() - pre) < 8.0
 
 
 def test_head_down_never_engages():

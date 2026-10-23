@@ -243,6 +243,29 @@ def _rebuild_heading_swing(psi, p, r):
     return _normalise(_mul(tz, swing))
 
 
+def _smooth_1d_forward(x, t, tau_s):
+    """Causal half of _smooth_1d: single forward exponential pass.
+
+    Lags by ~tau_s and never sees the future, which is exactly what a
+    freeze reference wants: the acausal (zero-phase) trend at a knock
+    onset is already contaminated by the knock through the backward
+    pass, while the causal value at engagement reads the riding as it
+    was ~tau_s ago -- last-good by construction.
+    """
+    x = np.asarray(x, float)
+    n = len(x)
+    if np.all(np.asarray(tau_s) <= 0):
+        return x.copy()
+    dt = float(np.median(np.diff(t)))
+    tau = np.broadcast_to(np.asarray(tau_s, float), (n,)).copy()
+    tau[tau <= 0] = np.inf
+    alpha = 1.0 - np.exp(-dt / tau)
+    out = x.copy()
+    for i in range(1, n):
+        out[i] = out[i - 1] + alpha[i] * (x[i] - out[i - 1])
+    return out
+
+
 def _smooth_1d(x, t, tau_s):
     """Scalar twin of smooth(): exponential low pass, forward then reversed
     to remove the delay, so a constant-rate sweep comes through unchanged.
@@ -377,7 +400,8 @@ def holder_mask(t, elev, engage_deg=35.0, hold_s=10.0, release_deg=30.0):
 
 
 def smooth_world_trend(t, q_w, psi_tau_s, pitch_tau_s, roll_tau_s,
-                       holder=(35.0, 10.0, 30.0), release_blend_s=2.0):
+                       holder=(35.0, 10.0, 30.0), release_blend_s=2.0,
+                       freeze_lead_s=10.0):
     """World-frame trend: heading on psi_tau_s, pitch on pitch_tau_s, roll
     on roll_tau_s.
 
@@ -390,7 +414,16 @@ def smooth_world_trend(t, q_w, psi_tau_s, pitch_tau_s, roll_tau_s,
     attitude, not just the pitch: on a real knock the mount flops
     +-20 deg in heading and roll (a 1 s leash removes almost nothing),
     so freezing one component leaves a touring trend. The view IS the
-    trend, so a touring trend is a touring view. On release the trend
+    trend, so a touring trend is a touring view. "Last-good" is the
+    CAUSAL trend freeze_lead_s BEFORE engagement. Two contaminations,
+    two cures: the zero-phase trend at the onset already sees the knock
+    through its backward pass (Dutch angle in the delivered view) --
+    cured by the causal pass, which never sees the future; and the
+    causal value AT engagement has already absorbed seconds of a fast
+    onset -- cured by the lead, which reads the riding before the step
+    started (measured: causal-at-edge -12.7 vs causal-10 s-back -24.0
+    on a -24 ride). Heading moves slowly enough that the lead stays
+    valid. On release the trend
     rejoins the live one by Slerp over release_blend_s -- one quaternion
     blend between two valid attitudes, not filtered-component splicing.
 
@@ -403,6 +436,12 @@ def smooth_world_trend(t, q_w, psi_tau_s, pitch_tau_s, roll_tau_s,
     r_t = _smooth_1d(r, t, roll_tau_s)
     p_live = _smooth_1d(p, t, pitch_tau_s)
     q_live = _rebuild_heading_swing(psi_t, p_live, r_t)
+    # Freeze reference: causal passes ONLY. The zero-phase trend at the
+    # onset already sees the knock through its backward pass; the causal
+    # value at engagement reads the riding ~tau_s ago, uncontaminated.
+    q_fro = _rebuild_heading_swing(_smooth_1d_forward(psi, t, psi_tau_s),
+                                   _smooth_1d_forward(p, t, pitch_tau_s),
+                                   _smooth_1d_forward(r, t, roll_tau_s))
     elev = forward_elevation(q_w)
     engage_deg, hold_s, release_deg = holder
     mask, runs = holder_mask(t, elev, engage_deg, hold_s, release_deg)
@@ -410,12 +449,18 @@ def smooth_world_trend(t, q_w, psi_tau_s, pitch_tau_s, roll_tau_s,
     if mask.any():
         idx = np.nonzero(mask)[0]
         # Contiguous engaged blocks; freeze each at its pre-engagement
-        # attitude, Slerp-rejoin to live over release_blend_s.
+        # attitude (freeze_lead_s back, definitely pre-knock), Slerp-rejoin
+        # to live over release_blend_s.
         breaks = np.nonzero(np.diff(idx) > 1)[0]
         blocks = np.split(idx, breaks + 1) if len(breaks) else [idx]
         dt = float(np.median(np.diff(t)))
+        lead = max(0, int(round(freeze_lead_s / dt)))
         for b in blocks:
-            fro = q_live[b[0] - 1] if b[0] > 0 else q_live[b[0]]
+            # Causal value freeze_lead_s back: the zero-phase trend is
+            # knock-contaminated through its backward pass, and the causal
+            # value at the edge has absorbed the onset; the lead reads
+            # clean riding before the step started.
+            fro = q_fro[max(0, b[0] - lead)]
             q_out[b] = fro
             nb = max(1, int(round(release_blend_s / dt)))
             tail = b[-1] + 1 + np.arange(nb)
