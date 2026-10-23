@@ -268,6 +268,20 @@ def correction_euler_axes(t, gyro, tau_s, axis_map=None, yaw_tau_s=None):
     from steadycut.stabilization import orientation as O
     qy, qp, qr = O.correction_axes(t, gyro, tau_s, axis_map,
                                     yaw_tau_s=yaw_tau_s)
+    return _rotvec_to_v360(qp, qy, qr)
+
+
+def _rotvec_to_v360(qp, qy, qr):
+    """Signed body rotvec components -> v360 (yaw, pitch, roll) commands.
+
+    Shared by the legacy and world paths: both produce signed rotvec
+    components in correction_axes' body frame, and v360 needs the
+    decomposition in the order it actually composes. One function so the
+    two paths cannot diverge here (a world correction skipped this step
+    once and toured the canopy with a frozen trend: 84 deg rotvec/Euler
+    confusion at holder scale).
+    """
+    from steadycut.stabilization import orientation as O
     corr = np.column_stack([qp, qy, qr])
     out = O.from_rotvec(np.deg2rad(corr))
     # `to_euler_zxy` inverts the renderer's MEASURED behavior,
@@ -280,10 +294,91 @@ def correction_euler_axes(t, gyro, tau_s, axis_map=None, yaw_tau_s=None):
     return -e[:, 0], e[:, 1], e[:, 2]            # yaw, pitch, roll
 
 
+class WorldPathRefused(Exception):
+    """The VQF world frame is unusable on this window: carry the reason and
+    the numbers for the certificate so the caller can fall back to legacy."""
+
+    def __init__(self, reason, info):
+        super().__init__(reason)
+        self.info = info
+
+
+def correction_world_axes(t, gyro, accel, axis_map, psi_tau_s, pitch_tau_s,
+                          roll_tau_s, holder=(35.0, 10.0, 30.0),
+                          gate_deg=8.0):
+    """(yaw, pitch, roll) correction from the VQF world frame + holder info.
+
+    The attitude comes from VQF quat6D (world +Z up), never from
+    gyro-only integrate(): on real rides integrate() departs from VQF's
+    up by tens of degrees inside one window, so a leash built on it
+    holds a fantasy direction. Returns ((qy, qp, qr), info) in the same
+    tuple shape and sign convention as correction_axes; info carries the
+    holder mask/runs, the accel-agreement gate value, and the taus.
+
+    Refuses (WorldPathRefused) when the attitude disagrees with the
+    accelerometer: the MEDIAN over the window of the angle between
+    attitude-up and 5 s accel medians above gate_deg. Median, not p95:
+    the p95 tail is rotation inside the median window (legitimate knock
+    transitions), while a wholesale-diverged VQF moves the median. A
+    refused window falls back to the legacy path, never to a degraded
+    world frame.
+    """
+    import vqf
+    from scipy.ndimage import median_filter
+    from steadycut.stabilization import orientation as O
+    from steadycut.stabilization.vqf_level import _handed_signs, quat_to_mat
+    t = np.asarray(t, float)
+    (pc, ps), (rc, rs), (gc, gs) = _handed_signs(axis_map)
+    gyr = np.radians(np.column_stack([ps * gyro[:, pc], rs * gyro[:, rc],
+                                      gs * gyro[:, gc]]))
+    acc = np.column_stack([ps * accel[:, pc], rs * accel[:, rc],
+                           gs * accel[:, gc]])
+    dt = float(np.median(np.diff(t)))
+    out = vqf.offlineVQF(np.ascontiguousarray(gyr), np.ascontiguousarray(acc),
+                         None, dt)
+    q_w = np.asarray(out["quat6D"], float)
+    R = quat_to_mat(q_w)
+    up_att = R[:, 2, :]  # body components of world-up (row 2)
+    an = acc / (np.linalg.norm(acc, axis=1, keepdims=True) + 1e-12)
+    k = max(1, int(round(5.0 / dt)))
+    med = np.column_stack([median_filter(an[:, i], size=k) for i in range(3)])
+    med = med / (np.linalg.norm(med, axis=1, keepdims=True) + 1e-12)
+    gate = np.degrees(np.arccos(np.clip(
+        np.einsum("ij,ij->i", up_att, med), -1.0, 1.0)))
+    info = {"gate_med_deg": float(np.median(gate)),
+            "gate_deg": gate_deg, "holder": tuple(holder),
+            "psi_tau_s": psi_tau_s, "pitch_tau_s": pitch_tau_s,
+            "roll_tau_s": roll_tau_s}
+    if info["gate_med_deg"] > gate_deg:
+        raise WorldPathRefused(
+            f"attitude-up vs accel median {info['gate_med_deg']:.1f} deg "
+            f"> {gate_deg} deg",
+            info)
+    q_trend, hinfo = O.smooth_world_trend(t, q_w, psi_tau_s, pitch_tau_s,
+                                          roll_tau_s, holder)
+    info["holder_runs"] = hinfo["holder_runs"]
+    info["holder_seconds"] = sum(b - a for a, b in hinfo["holder_runs"])
+    rv = np.degrees(O.to_rotvec(O.relative(q_w, q_trend)))
+    # NO axis-map signs on pitch/roll: the VQF inputs were already signed,
+    # so those rotvec components are natively in correction_axes' signed
+    # output convention (rotation about the signed axis by the signed
+    # angle is the same physical rotation). correction_axes integrates
+    # UNSIGNED columns and signs at the end; signing here AGAIN flips
+    # axes (X4 signs are all -1) and the holder drives the view into the
+    # tour instead of out of it. Yaw alone keeps a derived factor: the
+    # handedness fix in _handed_signs negates the gravity sign iff the
+    # signed frame has det -1, so yaw reads (sy*sg)*rv_z from the two
+    # conventions, never a fitted constant. Permutation: VQF (x, y, z)
+    # carries signed (pitch, roll, gravity) columns; correction_axes'
+    # body is (pitch, yaw, roll) = (x, z, y).
+    yaw_sign = axis_map.yaw[1] * gs
+    return (yaw_sign * rv[:, 2], rv[:, 0], rv[:, 1]), info
+
+
 def build_gyro_path(spec: ClipSpec, stamp_offset_ms: float = 0.0,
                     corner_hz: float = 0.15, drift_ppm: float = 0.0,
                     drift_ref_s: float = 0.0, yaw_corner_hz=None,
-                    yaw_adaptive_hz=None):
+                    yaw_adaptive_hz=None, pitch_tau_s=None, out_info=None):
     """Stabilisation path for a clip: gyro correction + framing, thinned.
 
     corner_hz 0.15 is the MEASURED production default (see correction_axes);
@@ -324,8 +419,26 @@ def build_gyro_path(spec: ClipSpec, stamp_offset_ms: float = 0.0,
     if yaw_adaptive_hz and yaw_tau:
         yaw_tau = (yaw_tau, 1.0 / (2.0 * math.pi * yaw_adaptive_hz))
     axis_map = spec.profile.axis_map if spec.profile is not None else None
-    qy, qp, qr = correction_euler_axes(tw, gw, tau, axis_map,
-                                       yaw_tau_s=yaw_tau)
+    world_info = None
+    if pitch_tau_s is not None and axis_map is not None:
+        # Travel-holder path: heading rides the production leash, pitch the
+        # slow holder leash, roll production. Refusal falls back to legacy.
+        try:
+            (wy, wp, wr), world_info = correction_world_axes(
+                tw, gw, imu.accel[mask], axis_map, tau, pitch_tau_s, tau)
+            # Same rotvec->v360 decomposition as the legacy path: the
+            # world correction is large (tens of degrees under the holder)
+            # where rotvec components and Euler angles differ most.
+            qy, qp, qr = _rotvec_to_v360(wp, wy, wr)
+        except WorldPathRefused as e:
+            world_info = {"refused": str(e), **e.info}
+            qy, qp, qr = correction_euler_axes(tw, gw, tau, axis_map,
+                                               yaw_tau_s=yaw_tau)
+    else:
+        qy, qp, qr = correction_euler_axes(tw, gw, tau, axis_map,
+                                           yaw_tau_s=yaw_tau)
+    if out_info is not None and world_info is not None:
+        out_info["world_path"] = world_info
     from steadycut.render.reframe import ControlPoint
     from steadycut.stabilization.path import PathPoint, thin
     raw = [PathPoint(t=float(tt), yaw=float(y),

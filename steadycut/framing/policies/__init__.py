@@ -107,6 +107,9 @@ class FramingPolicy:
     # None = fixed leash (legacy). Set on travel policies: the leash runs
     # fast through carved turns instead of ending up behind them, while
     # sub-2.5 s look-arounds never engage it and stay held.
+    pitch_tau_s: float | None = None  # slow holder leash on pitch (travel
+    # holder policies): world-frame trend with a knock holder. Seconds, not
+    # Hz. None = legacy integrate-frame path, bit for bit.
     corner_hz: float | None = None  # policy default corner; None = CLI default
     hint: str = "re-try with --pitch set by eye"
     notes: str = ""
@@ -139,5 +142,6 @@ def policy_names() -> list[str]:
 # for its profiles: anything that resolves a policy imports this package, so
 # registration is guaranteed before lookup.
 from steadycut.framing.policies import mtb  # noqa: E402,F401  (registers "mtb")
+from steadycut.framing.policies import mtb_travel  # noqa: E402,F401  (registers "mtb_travel")
 from steadycut.framing.policies import ski  # noqa: E402,F401  (registers "ski")
 from steadycut.framing.policies import ground  # noqa: E402,F401  (registers "ground")

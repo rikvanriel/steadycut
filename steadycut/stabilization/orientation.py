@@ -207,6 +207,42 @@ def to_euler_zyx(q):
     return np.degrees(np.stack([a, b, c], axis=-1))
 
 
+def split_heading_swing(q_w):
+    """Twist about world Z (heading) and the twist-free remainder (swing).
+
+    q_w are body->world quaternions (w, x, y, z) with world +Z up (the
+    VQF frame). Returns (psi, s_local_p, s_local_r, twist, swing) with psi
+    unwrapped radians, (s_local_p, s_local_r) the swing as heading-local
+    pitch/roll radians, and twist/swing quats with q_w = twist * swing.
+
+    The swing is extracted twist-free by construction, so rebuilding from
+    (psi, p, r) round-trips exactly; filtering the scalars instead of the
+    quaternion is what lets heading and tilt ride different leashes
+    (a single-tau Slerp cannot: orientation.py:250-255, the 77 vs 7.7 px
+    lesson). Do NOT filter a swing expressed in world X/Y: through a 90
+    deg switchback pitch and roll swap identities.
+    """
+    q_w = _normalise(np.asarray(q_w, float))
+    w, x, y, z = q_w[..., 0], q_w[..., 1], q_w[..., 2], q_w[..., 3]
+    psi = np.unwrap(2.0 * np.arctan2(z, w))
+    twist = np.stack([np.cos(psi / 2), np.zeros_like(psi),
+                      np.zeros_like(psi), np.sin(psi / 2)], axis=-1)
+    swing = _mul(_conj(twist), q_w)
+    # Heading-local tilt: the same rotation in the heading-rotated frame.
+    s_local = _mul(_mul(_conj(twist), swing), twist)
+    rv = to_rotvec(s_local)
+    return psi, rv[..., 0], rv[..., 1], twist, swing
+
+
+def _rebuild_heading_swing(psi, p, r):
+    """Inverse of split_heading_swing for filtered scalars."""
+    tz = np.stack([np.cos(psi / 2), np.zeros_like(psi),
+                   np.zeros_like(psi), np.sin(psi / 2)], axis=-1)
+    s_local = from_rotvec(np.stack([p, r, np.zeros_like(p)], axis=-1))
+    swing = _mul(_mul(tz, s_local), _conj(tz))
+    return _normalise(_mul(tz, swing))
+
+
 def _smooth_1d(x, t, tau_s):
     """Scalar twin of smooth(): exponential low pass, forward then reversed
     to remove the delay, so a constant-rate sweep comes through unchanged.
@@ -288,6 +324,110 @@ def smooth_channels(q_raw, t, tau_yaw_s, tau_other_s):
     return _zxy_to_quat(_smooth_1d(y, t, tau),
                         _smooth_1d(p, t, tau_other_s),
                         _smooth_1d(r, t, tau_other_s))
+
+
+def forward_elevation(q_w):
+    """World elevation (deg) of the VQF-frame Y axis (camera forward).
+
+    The same quantity the knock discriminator was measured on: the knock
+    holds this above +30 deg for ~2 min while nothing else on 30 min of
+    riding exceeds 7 s there.
+    """
+    q_w = _normalise(np.asarray(q_w, float))
+    w, x, y, z = q_w[..., 0], q_w[..., 1], q_w[..., 2], q_w[..., 3]
+    return np.degrees(np.arcsin(np.clip(2.0 * (y * z + w * x), -1.0, 1.0)))
+
+
+def holder_mask(t, elev, engage_deg=35.0, hold_s=10.0, release_deg=30.0):
+    """Samples where the travel-holder owns the pitch.
+
+    Detection runs on 1 s medians (a 1 kHz IMU carries the shake, never
+    read a trend off raw samples): a run above engage_deg lasting at
+    least hold_s engages, extended while above release_deg (hysteresis),
+    mapped back to a sample mask. Returns (mask, runs) with runs in
+    seconds for the certificate.
+    """
+    t = np.asarray(t, float)
+    elev = np.asarray(elev, float)
+    sec = np.arange(int(t[0]) + 1, int(t[-1]) - 1)
+    if len(sec) == 0:
+        return np.zeros(len(t), bool), []
+    med = np.array([np.median(elev[(t >= s) & (t < s + 1)]) for s in sec])
+    over = med > engage_deg
+    runs, i, n = [], 0, len(med)
+    while i < n:
+        if not over[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and over[j]:
+            j += 1
+        if j - i >= hold_s:
+            a, b = i, j  # seconds-grid indices; hysteresis-extend
+            while a > 0 and med[a - 1] > release_deg:
+                a -= 1
+            while b < n and med[b] > release_deg:
+                b += 1
+            runs.append((float(sec[a]), float(sec[b])))
+        i = j
+    mask = np.zeros(len(t), bool)
+    for a, b in runs:
+        mask |= (t >= a) & (t < b)
+    return mask, runs
+
+
+def smooth_world_trend(t, q_w, psi_tau_s, pitch_tau_s, roll_tau_s,
+                       holder=(35.0, 10.0, 30.0), release_blend_s=2.0):
+    """World-frame trend: heading on psi_tau_s, pitch on pitch_tau_s, roll
+    on roll_tau_s.
+
+    q_w are body->world quats (VQF quat6D, world +Z up). The swing is
+    filtered as heading-local (pitch, roll) scalars and rebuilt with
+    _rebuild_heading_swing. Roll keeps its own (fast) leash: only pitch
+    goes slow outside the holder.
+
+    Where holder_mask engages the trend holds the FULL last-good
+    attitude, not just the pitch: on a real knock the mount flops
+    +-20 deg in heading and roll (a 1 s leash removes almost nothing),
+    so freezing one component leaves a touring trend. The view IS the
+    trend, so a touring trend is a touring view. On release the trend
+    rejoins the live one by Slerp over release_blend_s -- one quaternion
+    blend between two valid attitudes, not filtered-component splicing.
+
+    Returns (q_trend, info): q_trend body->world, info with elevation,
+    the holder mask and runs for the certificate.
+    """
+    t = np.asarray(t, float)
+    psi, p, r, _, _ = split_heading_swing(q_w)
+    psi_t = _smooth_1d(psi, t, psi_tau_s)
+    r_t = _smooth_1d(r, t, roll_tau_s)
+    p_live = _smooth_1d(p, t, pitch_tau_s)
+    q_live = _rebuild_heading_swing(psi_t, p_live, r_t)
+    elev = forward_elevation(q_w)
+    engage_deg, hold_s, release_deg = holder
+    mask, runs = holder_mask(t, elev, engage_deg, hold_s, release_deg)
+    q_out = q_live.copy()
+    if mask.any():
+        idx = np.nonzero(mask)[0]
+        # Contiguous engaged blocks; freeze each at its pre-engagement
+        # attitude, Slerp-rejoin to live over release_blend_s.
+        breaks = np.nonzero(np.diff(idx) > 1)[0]
+        blocks = np.split(idx, breaks + 1) if len(breaks) else [idx]
+        dt = float(np.median(np.diff(t)))
+        for b in blocks:
+            fro = q_live[b[0] - 1] if b[0] > 0 else q_live[b[0]]
+            q_out[b] = fro
+            nb = max(1, int(round(release_blend_s / dt)))
+            tail = b[-1] + 1 + np.arange(nb)
+            tail = tail[tail < len(t)]
+            for i, k in enumerate(tail):
+                w = 0.5 - 0.5 * np.cos(np.pi * (i + 1) / (len(tail) + 1))
+                q_out[k] = _slerp_step(fro, q_live[k], float(w))
+    q_out = _normalise(q_out)
+    return (q_out,
+            {"elevation_deg": elev, "holder_mask": mask, "holder_runs": runs,
+             "psi_tau_s": psi_tau_s, "pitch_tau_s": pitch_tau_s,
+             "roll_tau_s": roll_tau_s})
 
 
 def relative(q_raw, q_smooth):

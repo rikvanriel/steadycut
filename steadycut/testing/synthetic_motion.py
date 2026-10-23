@@ -93,6 +93,19 @@ def accel_from_attitude(t: np.ndarray) -> np.ndarray:
                             G * np.cos(r)])
 
 
+def accel_from_quats(q: np.ndarray, g: float = G) -> np.ndarray:
+    """Gravity as the accelerometer sees it under the full attitude.
+
+    `accel_from_attitude` above models ROLL ONLY: pitch never reaches the
+    accelerometer, so a test that pitches the camera over sees a level
+    horizon and anything gated on elevation passes vacuously. Rotate
+    world-up gravity by the attitude instead: a_body = conj(q) * [0,0,g].
+    Reduces to `accel_from_attitude` at zero pitch by construction.
+    """
+    r = Rot.from_quat(np.asarray(q, float)[:, [1, 2, 3, 0]])
+    return r.inv().apply(np.array([0.0, 0.0, g]))
+
+
 def synthetic_stream(duration: float = 4.0, hz: float = IMU_HZ):
     """(time_s, gyro_deg_s, accel_m_s2) on the video's clock."""
     n = int(round(duration * hz))

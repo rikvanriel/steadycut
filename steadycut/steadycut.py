@@ -544,9 +544,9 @@ def main(argv=None) -> int:
     # Strided tracking REVERTED to 1: on the woods window stride 5 moves
     # the weighted peak -60 -> -70 ms and halves it (r -0.79 -> -0.50),
     # worse than stride 1 unweighted (-70, -0.54). The stride changes the
-    # inlier distribution the weights ride on, so the 5x matcher saving
-    # costs estimator quality. Stride stays available via track_stride
-    # for fast scans, never for serving.
+    # inlier distribution the weights are built on; the 5x matcher saving
+    # is not worth a degraded estimator. Stride stays available via
+    # track_stride for fast scans, never for serving.
     sync = measure_sync(spec, workdir=tmp / "sync", track_stride=1)
     # The threshold rides with the estimator (4/sqrt(n) of the scan): a fixed
     # 0.5 discarded a real -100 ms offset on a 26 s rock-garden scan
@@ -582,11 +582,27 @@ def main(argv=None) -> int:
         yaw_adaptive = None
     if yaw_adaptive:
         print(f"CLI| adaptive yaw leash {yaw_adaptive} Hz in turns")
+    pitch_tau = getattr(policy, "pitch_tau_s", None)
+    if pitch_tau is not None:
+        print(f"CLI| travel-holder pitch leash {pitch_tau:.1f}s "
+              f"(policy {policy.name})")
     out = Path(a.out) if a.out else Path(f"clip_{int(a.start)}s.mp4")
     try:
+        path_info: dict = {}
         pts = build_gyro_path(spec, stamp_offset_ms=offset_ms,
                               corner_hz=corner, yaw_corner_hz=yaw_corner,
-                              yaw_adaptive_hz=yaw_adaptive)
+                              yaw_adaptive_hz=yaw_adaptive,
+                              pitch_tau_s=pitch_tau, out_info=path_info)
+        if "world_path" in path_info:
+            cert["world_path"] = path_info["world_path"]
+            wp = path_info["world_path"]
+            if "refused" in wp:
+                print(f"CLI| world path REFUSED ({wp['refused']}): "
+                      f"legacy path served")
+            else:
+                print(f"CLI| world path gate median {wp['gate_med_deg']:.1f}deg, "
+                      f"holder {wp['holder_seconds']:.0f}s "
+                      f"over {wp['holder_runs']}")
         if a.yaw_bias:
             import dataclasses
             pts = [dataclasses.replace(p, yaw=float(p.yaw) + a.yaw_bias)
