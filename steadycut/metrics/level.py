@@ -47,6 +47,8 @@ from pathlib import Path
 
 import numpy as np
 
+import cv2
+
 # A far-field accumulator's gain is not 1:1, and the departure is not stable
 # across framing (measured 1.781 at pitch -12, -2.777 at pitch -30 on the same
 # path).  So there is no single calibration constant, and dividing by one would
@@ -99,3 +101,84 @@ def level_score(video: str | Path, **kw) -> dict:
         "gain_stable_across_framing": GAIN_IS_STABLE_ACROSS_FRAMING,
         "trusted": TRUSTED,
     }
+
+
+def _lsd_segments(gray):
+    lsd = cv2.createLineSegmentDetector(scale=0.8)
+    segs, _, _, _ = lsd.detect(gray)
+    if segs is None:
+        return np.zeros((0, 4))
+    segs = np.asarray(segs)
+    if segs.ndim == 3:
+        segs = segs[:, 0, :]
+    return segs.reshape(-1, 4)
+
+
+def roll_of_frame(bgr, mag_min=25.0, ang_max_deg=35.0):
+    """Absolute roll of one frame from long near-vertical edges.
+
+    Returns (roll_deg, n_used). Positive = world-verticals lean right
+    (clockwise). NaN when fewer than 3 qualifying segments: silence is
+    explicit, never a zero.
+    """
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    segs = _lsd_segments(gray)
+    if len(segs) == 0:
+        return float("nan"), 0
+    dx = segs[:, 2] - segs[:, 0]
+    dy = segs[:, 3] - segs[:, 1]
+    length = np.hypot(dx, dy)
+    ang = np.degrees(np.arctan2(dx, dy))
+    ang = (ang + 90.0) % 180.0 - 90.0
+    sel = (length >= mag_min) & (np.abs(ang) <= ang_max_deg)
+    if int(sel.sum()) < 3:
+        return float("nan"), int(sel.sum())
+    w = length[sel]
+    order = np.argsort(ang[sel])
+    cum = np.cumsum(w[order])
+    return float(ang[sel][order][np.searchsorted(cum, cum[-1] / 2.0)]), int(sel.sum())
+
+
+def roll_series(video_path, box=(0.0, 1.0, 0.0, 1.0), stride=1):
+    """Per-frame absolute roll in degrees; box=(y0,y1,x0,x1) fractions."""
+    cap = cv2.VideoCapture(str(video_path))
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    rolls, cov = [], []
+    for i in range(0, n, stride):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+        ok, fr = cap.read()
+        if not ok:
+            rolls.append(float("nan"))
+            cov.append(0)
+            continue
+        h, w = fr.shape[:2]
+        y0, y1, x0, x1 = box
+        r, c = roll_of_frame(fr[int(h * y0):int(h * y1), int(w * x0):int(w * x1)])
+        rolls.append(r)
+        cov.append(c)
+    cap.release()
+    return np.array(rolls), np.array(cov)
+
+
+def level_report(video_path):
+    """Static lean + wobble from the edge instrument; pitch from tracking."""
+    from steadycut.stabilization.far_track import track
+    rolls, _ = roll_series(video_path)
+    ok = ~np.isnan(rolls)
+    d, _ = track(video_path)
+    dy = np.asarray(d)[:, 1] * (720.0 / 960.0)
+    rep = {
+        "roll_mean_deg": float(np.mean(rolls[ok])) if ok.any() else float("nan"),
+        "roll_rms_deg": float(np.std(rolls[ok])) if ok.any() else float("nan"),
+        "roll_jitter_deg": float(np.std(np.diff(rolls[ok]))) if ok.sum() > 1 else float("nan"),
+        "roll_coverage": float(ok.mean()),
+        "pitch_rms_px": float(np.std(dy)),
+        "pitch_jitter_px": float(np.std(np.diff(dy))),
+        "frames": len(rolls),
+    }
+    print("roll static lean %+.2fdeg | wobble rms %.2fdeg jitter %.2fdeg | coverage %.2f" % (
+        rep["roll_mean_deg"], rep["roll_rms_deg"], rep["roll_jitter_deg"], rep["roll_coverage"]))
+    print("pitch rms %.2fpx jitter %.2fpx | frames %d" % (
+        rep["pitch_rms_px"], rep["pitch_jitter_px"], rep["frames"]))
+    return rep
