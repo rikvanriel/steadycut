@@ -80,6 +80,64 @@ def test_residual_correction_honours_bound() -> None:
     assert np.abs(corr[:, :2]).max() <= 12.0 + 1e-9
 
 
+def _osc_traj(amp: float, hz: float = 4.0, n: int = 120) -> Traj:
+    # Velocity sine at 30 fps; the smoothed residual is the position sine,
+    # so the correction oscillates at ~amp once the mean is removed.
+    t = np.arange(n) / 30.0
+    d = np.zeros((n, 3))
+    d[:, 1] = amp * np.sin(2.0 * math.pi * hz * t)
+    return Traj(deltas=d, inliers=np.full(n, 100))
+
+
+def test_residual_correction_never_rail_bangs() -> None:
+    # A +/-25 px oscillation under a 12 px bound: the old hard clip
+    # squared it into rail-to-rail teleports of exactly 2*bound per frame
+    # (measured: bound-12 output 44.8 px on a 21.2 px input). The rescale
+    # must keep every frame-to-frame step well under the teleport size.
+    # sigma=8.0 follows almost nothing at 3 Hz, so the correction spans
+    # the full oscillation and really exercises the bound (asserted).
+    tr = _osc_traj(25.0)
+    pos = accumulate(tr)
+    raw = np.stack([gsmooth(pos[:, i], 8.0) for i in range(3)], axis=1) - pos
+    assert np.abs(raw[:, 1]).max() > 12.0  # bound actually engaged
+    corr = residual_correction(tr, sigma=8.0, bound=12.0)
+    assert np.abs(corr[:, :2]).max() <= 12.0 + 1e-9
+    # A rail-to-rail teleport is 2*bound per frame; the rescaled series
+    # must stay under half of that (the old code steps the full 24 here).
+    assert np.abs(np.diff(corr[:, 1])).max() < 12.0
+
+
+def test_residual_correction_identity_when_clean() -> None:
+    # A +/-5 px oscillation under a 12 px bound needs no bounding at all:
+    # the output must equal the unclipped smoothed residual bit for bit.
+    tr = _osc_traj(5.0)
+    corr = residual_correction(tr, sigma=0.2, bound=12.0)
+    pos = accumulate(tr)
+    sm = np.stack([gsmooth(pos[:, i], 0.2) for i in range(3)], axis=1)
+    want = (sm - pos) * np.array([960.0 / 1280.0, 720.0 / 960.0, 1.0])
+    np.testing.assert_allclose(corr, want, rtol=1e-12)
+
+
+def test_residual_correction_spikes_keep_hard_clip() -> None:
+    # Rare spikes (1 of 120 frames past the bound) take the hard-clip
+    # path: rescaling the whole series for an isolated kick would weaken
+    # the 119 good frames to accommodate one bad one.
+    d = np.zeros((120, 3))
+    t = np.arange(120) / 30.0
+    # Base ripple small in POSITION (vel 2.0 at 1 Hz ~= +/-9.5 px, under
+    # the bound after the 0.75 render scaling); only the kick exceeds it.
+    d[:, 1] = 2.0 * np.sin(2.0 * math.pi * 1.0 * t)
+    d[60, 1] += 40.0
+    d[61, 1] -= 40.0  # out-and-back kick: a transient corr spike
+    tr = Traj(deltas=d, inliers=np.full(120, 100))
+    corr = residual_correction(tr, sigma=8.0, bound=12.0)
+    pos = accumulate(tr)
+    sm = np.stack([gsmooth(pos[:, i], 8.0) for i in range(3)], axis=1)
+    want = (sm - pos) * np.array([960.0 / 1280.0, 720.0 / 960.0, 1.0])
+    np.testing.assert_allclose(corr[:, :2], np.clip(want[:, :2], -12.0, 12.0),
+                               rtol=1e-12, atol=1e-12)
+
+
 def test_clip_spec_defaults_match_production() -> None:
     s = ClipSpec(source="x.insv", start=0.0, duration=1.0)
     assert s.framing_pitch == -12.0 and s.fov == 120.0

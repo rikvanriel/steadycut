@@ -558,13 +558,36 @@ def residual_correction(traj: Traj, sigma: float = 4.0,
                         render_size: tuple[int, int] = (960, 720),
                         track_size: tuple[int, int] = (1280, 960)) -> np.ndarray:
     """Bounded 2D residual correction per frame: (N, dx, dy, dtheta) at render
-    scale. Smoothed residual minus residual, clipped to the honesty bound."""
+    scale. Smoothed residual minus residual, rescaled to the honesty bound.
+
+    A hard clip on a smooth oscillation squares it: every bound crossing
+    becomes a rail-to-rail teleport (up to 2*bound between frames) that
+    injects high-frequency jitter instead of removing shake (measured:
+    bound-12 output 44.8 px on a 21.2 px input). So when a large fraction
+    of frames would clip, the bound is applied as a single rescale of the
+    whole series, preserving the correction shape exactly; rare spikes
+    keep the hard clip (isolated single-frame clips cannot build an
+    oscillation). Whenever the series already fits, both paths are the
+    identity.
+    """
     pos = accumulate(traj)
     sm = np.stack([gsmooth(pos[:, i], sigma) for i in range(3)], axis=1)
     corr = sm - pos
     sx = render_size[0] / track_size[0]
     corr[:, 0] *= sx
     corr[:, 1] *= render_size[1] / track_size[1]
+    mag = np.abs(corr[:, :2]).max()
+    if mag > bound:
+        # Two regimes: an oscillation that keeps crossing the bound would
+        # be squared into rail-to-rail teleports by a hard clip (measured:
+        # bound-12 output 44.8 px on a 21.2 px input), so rescale the whole
+        # series and preserve its shape. Rare spikes get the hard clip:
+        # isolated single-frame clips cannot build an oscillation.
+        frac = np.mean(np.abs(corr[:, :2]) >= bound)
+        if frac > 0.05:
+            tail = np.quantile(np.abs(corr[:, :2]), 0.995)
+            if tail > 0:
+                corr[:, :2] *= min(1.0, bound / tail)
     corr[:, :2] = np.clip(corr[:, :2], -bound, bound)
     return corr
 
