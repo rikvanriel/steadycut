@@ -217,5 +217,32 @@ def test_the_2d_defaults_are_the_validated_ones() -> None:
     assert hy["sigma"].default == 1.0
     assert hy["bound"].default == 12.0
     assert hy["zoom"].default == 1.05
+    assert hy["fit_rotation"].default is False
     assert inspect.signature(
         P.residual_correction).parameters["sigma"].default == 4.0
+    assert inspect.signature(
+        P.residual_correction).parameters["fit_rotation"].default is False
+
+
+def test_translation_only_zeroes_rotation_by_default() -> None:
+    """The ORB dtheta is noise-dominated on real footage; the default
+    pass must not apply any rotation (footage battery: knock and
+    ghost both improve with it off)."""
+    n = 200
+    d = np.zeros((n, 3))
+    d[:, 0] = 6.0 * np.sin(2 * np.pi * 4.0 * np.arange(n) / 30.0)
+    d[:, 2] = 0.5 * np.sin(2 * np.pi * 4.0 * np.arange(n) / 30.0)
+    traj = Traj(deltas=d, inliers=np.full(n, 500))
+    corr = residual_correction(traj, sigma=1.0, bound=12.0)
+    assert np.all(corr[:, 2] == 0.0)
+    assert float(np.abs(corr[:, :2]).max()) > 0.0  # translation kept
+
+
+def test_fit_rotation_opt_in_preserves_dtheta() -> None:
+    n = 200
+    d = np.zeros((n, 3))
+    d[:, 2] = 0.5 * np.sin(2 * np.pi * 4.0 * np.arange(n) / 30.0)
+    traj = Traj(deltas=d, inliers=np.full(n, 500))
+    corr = residual_correction(traj, sigma=1.0, bound=12.0,
+                               fit_rotation=True)
+    assert float(np.abs(corr[:, 2]).max()) > 0.0

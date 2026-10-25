@@ -554,9 +554,10 @@ def bounce_of_traj(traj: Traj) -> tuple[float, float]:
 
 
 def residual_correction(traj: Traj, sigma: float = 4.0,
-                        bound: float = 12.0,
-                        render_size: tuple[int, int] = (960, 720),
-                        track_size: tuple[int, int] = (1280, 960)) -> np.ndarray:
+                         bound: float = 12.0,
+                         render_size: tuple[int, int] = (960, 720),
+                         track_size: tuple[int, int] = (1280, 960),
+                         fit_rotation: bool = False) -> np.ndarray:
     """Bounded 2D residual correction per frame: (N, dx, dy, dtheta) at render
     scale. Smoothed residual minus residual, rescaled to the honesty bound.
 
@@ -569,6 +570,14 @@ def residual_correction(traj: Traj, sigma: float = 4.0,
     keep the hard clip (isolated single-frame clips cannot build an
     oscillation). Whenever the series already fits, both paths are the
     identity.
+
+    fit_rotation=False (default) zeroes the dtheta column: the ORB
+    rotation estimate is noise-dominated on real footage (measured
+    1.25 deg/frame against ~0.17 deg/frame of real head roll, corr
+    +0.2 with pixel roll), and applying it injects rotation jitter
+    on both axes (knock mid 12.6/12.4 -> 10.8/11.0, ghost mid
+    12.6/12.4 -> 10.6/9.6 with it off). Pass True only where a
+    rotation residual is proven and the tracker earns it.
     """
     pos = accumulate(traj)
     sm = np.stack([gsmooth(pos[:, i], sigma) for i in range(3)], axis=1)
@@ -589,6 +598,8 @@ def residual_correction(traj: Traj, sigma: float = 4.0,
             if tail > 0:
                 corr[:, :2] *= min(1.0, bound / tail)
     corr[:, :2] = np.clip(corr[:, :2], -bound, bound)
+    if not fit_rotation:
+        corr[:, 2] = 0.0
     return corr
 
 
@@ -668,7 +679,7 @@ def warp_video(src_video: str | Path, dst_video: str | Path,
 
 def hybrid_correct(src_video: str | Path, dst_video: str | Path,
                    sigma: float = 1.0, bound: float = 12.0,
-                   zoom: float = 1.05) -> Traj:
+                   zoom: float = 1.05, fit_rotation: bool = False) -> Traj:
     """Bounded 2D residual pass over an already gyro-stabilised clip.
 
     sigma 1.0 is measured on real trail footage, not chosen by taste. Across nine
@@ -683,7 +694,8 @@ def hybrid_correct(src_video: str | Path, dst_video: str | Path,
     pass still removes about a sixth of the residual.
     """
     traj = track_far(src_video)
-    corr = residual_correction(traj, sigma=sigma, bound=bound)
+    corr = residual_correction(traj, sigma=sigma, bound=bound,
+                              fit_rotation=fit_rotation)
     warp_video(src_video, dst_video, corr, zoom=zoom)
     return traj
 
