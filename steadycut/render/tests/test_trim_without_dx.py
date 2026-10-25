@@ -101,7 +101,15 @@ def test_detailed_threading_zero_behavior_change():
     assert [tuple(s[:4]) for s in spans] == [tuple(r) for r in plain]
     assert all(isinstance(s, Span) and len(s) == 11 for s in spans)
     s = spans[0]
-    assert s.mutual and s.fwd == 1.0 and s.disp == 44.0 and s.tx == 462
+    assert s.mutual and s.fwd == 1.0 and s.disp == 44.0
+    # tx pins the A-side template peak, which is a near-tie in random
+    # noise: exact tie-breaking moves across library versions (462
+    # here, 472 on newer stacks) while the behavior the test guards
+    # (rects, mutual, score, displacement) is identical. Pin the copy
+    # window instead: the A-copy lives at 446..526, the B-copy at
+    # 490..570.
+    assert 446 <= s.tx <= 526
+    assert 490 <= s.tx + s.disp <= 570
     assert s.sup1 - s.sup0 >= s.x1 - s.x0  # support covers the clamp
     # old-style unpack keeps working
     y0, y1, x0, x1 = spans[0][:4]
