@@ -191,3 +191,141 @@ def compose_remap(global_dx, global_dy, local_dx, local_dy,
     map_x = (xs.ravel() - gx - lx).reshape(h, w)
     map_y = (ys.ravel() - gy - ly).reshape(h, w)
     return map_x, map_y
+
+
+# --- Option D: plane+parallax translation fit (reviewer t_d4867229) ---
+#
+# Per frame, per cell: flow = gyro-rotation field (full 3D incl. roll
+# swirl, per-cell plate) + t x (invdepth - mean invdepth). The fit is
+# over translation ONLY; rotation is subtracted first from a physical
+# model, never fitted from the flow (a fitted rotation would absorb
+# translation and pass its own exam). Depth comes from the LF band and
+# multiplies HP lateral motion only. Median invdepth is normalized to 1
+# (fixes the t*depth scale ambiguity); uniform depth degenerates the tz
+# column to zero by construction, which the fit must survive, not hide.
+
+# Refusal floors (numeric certificate, pinned before benches per review).
+TRANSLATION_INLIER_FLOOR = 0.5
+TRANSLATION_RESID_CAP_PX = 2.0
+
+
+def plate_map(h, w, h_fov_deg):
+    """Per-pixel plate (px per radian) under a rectilinear assumption.
+
+    x_px = (w/2) * tan(theta) / tan(hfov/2), so plate grows as sec^2
+    toward the edges (~1.5-2x at 115 deg). Returns plate (h, w) and
+    the pixel offsets from centre (dx, dy). The rectilinear form is
+    stated, not hidden: plate error mixes rotation into translation,
+    which the leak gate (rotation-only synthetic -> t ~= 0) guards.
+    """
+    f = (w / 2.0) / np.tan(np.radians(h_fov_deg) / 2.0)
+    xs = np.arange(w, dtype=float) - (w - 1) / 2.0
+    ys = np.arange(h, dtype=float) - (h - 1) / 2.0
+    dx, dy = np.meshgrid(xs, ys)
+    r2 = (dx / f) ** 2 + (dy / f) ** 2
+    return f * (1.0 + r2), dx, dy
+
+
+def rotation_field(om_x, om_y, om_z, plate, dx, dy):
+    """Gyro-predicted differential rotation flow per pixel (rad/frame).
+
+    Pitch/yaw through the per-cell plate; roll as swirl about centre.
+    """
+    vx = plate * om_x - dy * om_z
+    vy = plate * om_y + dx * om_z
+    return vx, vy
+
+
+def fit_frame_translation(flow, rot, invdepth, weights):
+    """Robust per-frame translation fit (IRLS, Huber).
+
+    flow, rot: (ny, nx, 2) measured cell flow and gyro-predicted
+      rotation field in px/frame. invdepth: (ny, nx), median ~ 1.
+      weights: (ny, nx) validity (0..1).
+    Model per cell: flow - rot = t * (d - mean(d)) elementwise per
+      axis, plus tz * (radial unit * d). Nuisance uniform + swirl
+      columns absorb plate-error rotation residuals (a fitted rotation
+      is DISCARDED, never drives the warp: the mesh corrects
+      translation only). Returns t (3,), inlier
+      fraction, weighted RMS residual. Degenerate columns (uniform
+      depth -> tz column 0) solve to 0 via lstsq minimum-norm.
+    """
+    flow = np.asarray(flow, dtype=float)
+    rot = np.asarray(rot, dtype=float)
+    d = np.asarray(invdepth, dtype=float)
+    w = np.asarray(weights, dtype=float)
+    ny, nx = d.shape
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    rx = (xx - (nx - 1) / 2.0) / max(nx - 1, 1)
+    ry = (yy - (ny - 1) / 2.0) / max(ny - 1, 1)
+    dm = d - float(np.median(d))
+    y = (flow - rot).reshape(-1, 2)
+    n = y.shape[0]
+    # design: per cell rows [dx: tx*dm, tz*rx*dm], [dy: ty*dm, tz*ry*dm],
+    # plus nuisance uniform + swirl (absorbs plate-error rotation; its
+    # coefficients are discarded, only t (first 3) is returned).
+    A = np.zeros((2 * n, 6))
+    A[0::2, 0] = dm.ravel()
+    A[0::2, 2] = (rx * dm).ravel()
+    A[1::2, 1] = dm.ravel()
+    A[1::2, 2] = (ry * dm).ravel()
+    A[0::2, 3] = 1.0
+    A[1::2, 4] = 1.0
+    A[0::2, 5] = (-ry).ravel()
+    A[1::2, 5] = rx.ravel()
+    wv = np.repeat(w.ravel(), 2)
+    b = y.ravel()
+    beta = np.zeros(6)
+    rw = wv.copy()
+    if rw.sum() == 0:
+        return beta, 0.0, float("inf")
+    for _ in range(5):
+        r = b - A @ beta
+        s = np.median(np.abs(r[wv > 0])) + 1e-9
+        # Huber k=2.0: ~95% efficiency on clean Gaussian tails, so the
+        # inlier fraction reads ~0.95 on clean data and drops only on
+        # real outliers (k=1.5 would sit at ~0.87 even when clean).
+        rw = wv * np.minimum(1.0, 2.0 * s / (np.abs(r) + 1e-9))
+        if rw.sum() < 1e-9:
+            break
+        Aw = A * rw[:, None]
+        beta, _, _, _ = np.linalg.lstsq(Aw, b * rw, rcond=None)
+    resid = b - A @ beta
+    inl = float(rw.sum() / max(wv.sum(), 1e-9))
+    rms = float(np.sqrt(np.sum(rw * resid ** 2) / max(rw.sum(), 1e-9)))
+    return beta[:3].copy(), inl, rms
+
+
+def update_invdepth(invdepth, flow_mag_lf, tau_frames=30.0):
+    """Temporal edge-preserving inverse-depth update (v1).
+
+    Depth proxy: LF band magnitude of (cell flow - frame median),
+    median-normalized to 1 (fixes scale). Exponential smoothing with
+    MAD-based reset: a step bigger than 3*MAD restarts the cell
+    instead of smearing an occlusion across it.
+    """
+    d = np.asarray(invdepth, dtype=float)
+    m = np.asarray(flow_mag_lf, dtype=float)
+    med = float(np.median(m)) + 1e-9
+    raw = m / med
+    a = 1.0 - np.exp(-1.0 / tau_frames)
+    sm = d + a * (raw - d)
+    mad = float(np.median(np.abs(raw - np.median(raw)))) + 1e-9
+    reset = np.abs(raw - d) > 3.0 * 1.4826 * mad
+    out = np.where(reset, raw, sm)
+    return out / (float(np.median(out)) + 1e-9)
+
+
+def pin_weights(score, prev, up=0.7, down=0.3):
+    """Hysteresis pin weights (reviewer gate C).
+
+    score: float array, continuous pin detector (e.g. near-fieldness).
+    prev: float array, current weights. A cell engages above `up` and
+    releases below `down`; between the thresholds it holds its state,
+    so a frame-by-frame detector flicker cannot step the correction.
+    """
+    score = np.asarray(score, dtype=float)
+    prev = np.asarray(prev, dtype=float)
+    out = np.where(score >= up, 1.0, prev)
+    out = np.where(score < down, 0.0, out)
+    return out
