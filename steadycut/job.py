@@ -10,7 +10,6 @@ import argparse
 import fcntl
 import hashlib
 import json
-import math
 import os
 import shutil
 import tempfile
@@ -61,6 +60,12 @@ def write_envelope(path, args: dict, base=None) -> dict:
     same source.
     """
     render = {k: args[k] for k in ENVELOPE_KEYS if k in args}
+    if base is not None:
+        try:
+            render["source"] = Path(args["source"]).resolve().relative_to(
+                Path(base).resolve()).as_posix()
+        except ValueError:
+            pass  # outside the project root: keep the path as given
     env = {"version": ENVELOPE_VERSION,
            "base": str(base) if base is not None else None,
            "source": source_identity(args["source"]),
@@ -101,24 +106,32 @@ def apply_envelope(args_ns, env: dict, argv=None) -> None:
     test). Raises ValueError on a stale job.
     """
     eargs = env["args"]
-    if Path(args_ns.source).resolve() != Path(eargs["source"]).resolve():
+    esrc = eargs["source"]
+    base = env.get("base")
+    if base is not None and not os.path.isabs(esrc):
+        esrc = str(Path(base) / esrc)
+    if getattr(args_ns, "source", None) is None:
+        args_ns.source = esrc
+    elif Path(args_ns.source).resolve() != Path(esrc).resolve():
         raise ValueError(
-            f"job is for {eargs['source']}, argv has {args_ns.source}")
+            f"job is for {esrc}, argv has {args_ns.source}")
     for k in ("start", "dur"):
-        if abs(float(getattr(args_ns, k)) - float(eargs[k])) > 1e-6:
+        if getattr(args_ns, k, None) is None:
+            setattr(args_ns, k, float(eargs[k]))
+        elif abs(float(getattr(args_ns, k)) - float(eargs[k])) > 1e-6:
             raise ValueError(
                 f"job {k}={eargs[k]}, argv {k}={getattr(args_ns, k)}")
     ident = env.get("source")
     if ident is not None:
         try:
-            cur = source_identity(eargs["source"])
+            cur = source_identity(esrc)
         except OSError:
-            raise ValueError(f"job source not found: {eargs['source']}")
+            raise ValueError(f"job source not found: {esrc}")
         if (cur["size"] != ident.get("size")
                 or cur["mtime"] != ident.get("mtime")):
             raise ValueError(
                 f"job source changed since envelope "
-                f"(size/mtime mismatch): {eargs['source']}")
+                f"(size/mtime mismatch): {esrc}")
     explicit = set()
     if argv is not None:
         from steadycut.steadycut import build_parser
@@ -226,13 +239,19 @@ def build_proxy(source, start: float, dur: float, dst,
     return render_constant(spec, dst, preset="ultrafast")
 
 
+class OutputLocked(ValueError):
+    """claim_out contention: another render holds this output path."""
+
+
 @contextmanager
 def claim_out(out):
     """Lockfile beside the output: two renders never publish one file.
 
     Yields the staged temp path; the caller renders there, then publishes
-    with job.publish-equivalent rename. Stale locks (dead PID) are
-    reclaimed; a live holder raises instead of overwriting.
+    with steadycut.publish. The lock is kernel-managed (flock): it dies
+    with the holder, so no stale state survives a crash; the PID line in
+    the lockfile is diagnostic only. A live holder raises OutputLocked
+    instead of overwriting.
 
     The lockfile is never unlinked while held: an unlink-while-locked
     orphan lets a second process lock the dead inode while a third locks
@@ -249,7 +268,7 @@ def claim_out(out):
                 fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 fh.seek(0)
-                raise ValueError(
+                raise OutputLocked(
                     f"output locked by another render: {fh.read().strip()}")
             try:
                 live = os.stat(lock)
@@ -267,4 +286,4 @@ def claim_out(out):
             finally:
                 shutil.rmtree(staged.parent, ignore_errors=True)
             return
-    raise ValueError(f"output locked by another render: {lock}")
+    raise OutputLocked(f"output locked by another render: {lock}")

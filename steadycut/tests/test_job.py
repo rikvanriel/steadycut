@@ -3,10 +3,10 @@ import json
 
 import pytest
 
-from steadycut.job import (ENVELOPE_KEYS, apply_envelope, check_window,
-                           claim_out, fingerprint, load_envelope,
-                           media_duration, proxy_manifest, snap_window,
-                           source_identity, write_envelope)
+from steadycut.job import (ENVELOPE_KEYS, OutputLocked, apply_envelope,
+                           check_window, claim_out, fingerprint,
+                           load_envelope, media_duration, proxy_manifest,
+                           snap_window, source_identity, write_envelope)
 from steadycut.steadycut import build_parser, main
 
 
@@ -166,13 +166,11 @@ def test_claim_out_keeps_lockfile_and_cleans_staged_on_failure(tmp_path):
     except RuntimeError:
         pass
     assert staged is not None and not staged.parent.exists()
-    # Contention: a live holder refuses a second claim.
+    # Contention: a live holder raises OutputLocked for a second claim.
     with claim_out(out):
-        with pytest.raises(ValueError, match="locked by another render"):
+        with pytest.raises(OutputLocked):
             with claim_out(out):
                 pass
-    # The lockfile is kept, never unlinked while held.
-    assert out.with_name(out.name + ".lock").exists()
 
 
 def test_apply_envelope_refuses_stale_job(tmp_path):
@@ -202,3 +200,88 @@ def test_source_identity_pins_size(tmp_path):
     i1 = source_identity(src)
     src.write_bytes(b"\x00" * 128)
     assert source_identity(src)["size"] != i1["size"]
+
+
+def test_job_alone_supplies_the_window(tmp_path):
+    # A bare `steadycut --job gui_job.json` parses with no window on argv;
+    # the envelope supplies source/start/dur.
+    src = tmp_path / "clip.insv"
+    src.write_bytes(b"\x00" * 64)
+    env = write_envelope(tmp_path / "j.json", _args(source=str(src)))
+    ns = build_parser().parse_args(["--job", str(tmp_path / "j.json")])
+    assert (ns.source, ns.start, ns.dur) == (None, None, None)
+    apply_envelope(ns, env, ["--job", str(tmp_path / "j.json")])
+    assert (ns.source, ns.start, ns.dur) == (str(src), 10.0, 5.0)
+
+
+def test_job_source_resolves_against_base(tmp_path, monkeypatch):
+    # The envelope stores the source relative to base, so a moved project
+    # directory still resolves its media instead of pointing at the old path.
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    src = proj / "clip.insv"
+    src.write_bytes(b"\x00" * 64)
+    env = write_envelope(tmp_path / "j.json", _args(source=str(src)),
+                         base=proj)
+    assert env["args"]["source"] == "clip.insv"
+    monkeypatch.chdir(tmp_path)  # away from the project dir
+    ns = build_parser().parse_args(["--job", str(tmp_path / "j.json")])
+    apply_envelope(ns, env, ["--job", str(tmp_path / "j.json")])
+    assert ns.source == str(src)
+    assert (ns.start, ns.dur) == (10.0, 5.0)
+
+
+def test_job_argv_matches_literal_argv(tmp_path):
+    # The byte-identical contract at arg level: a job run and the literal
+    # argv it was exported from agree on every envelope key.
+    src = tmp_path / "clip.insv"
+    src.write_bytes(b"\x00" * 64)
+    literal = build_parser().parse_args(
+        [str(src), "--start", "10", "--dur", "5", "--framing", "ski",
+         "--pitch", "-14", "--tall", "--no-2d", "--preset", "fast"])
+    write_envelope(tmp_path / "j.json", dict(vars(literal)))
+    argv = [str(src), "--start", "10", "--dur", "5",
+            "--job", str(tmp_path / "j.json")]
+    ns = build_parser().parse_args(argv)
+    apply_envelope(ns, load_envelope(tmp_path / "j.json"), argv)
+    assert all(getattr(ns, k) == getattr(literal, k) for k in ENVELOPE_KEYS)
+
+
+def test_main_check_validates_without_rendering(tmp_path, monkeypatch):
+    import steadycut.job as J
+    monkeypatch.setattr(J, "media_duration", lambda s: 900.0)
+    src = tmp_path / "clip.insv"
+    src.write_bytes(b"\x00" * 64)
+    out = tmp_path / "o.mp4"
+    assert main([str(src), "--start", "10", "--dur", "5", "--check",
+                 "--out", str(out)]) == 0
+    assert not out.exists()  # validated, not rendered
+    assert main([str(src), "--start", "899", "--dur", "5", "--check",
+                 "--out", str(out)]) == 2
+    assert not out.exists()
+
+
+def test_main_check_with_bare_job(tmp_path, monkeypatch):
+    import steadycut.job as J
+    monkeypatch.setattr(J, "media_duration", lambda s: 900.0)
+    src = tmp_path / "clip.insv"
+    src.write_bytes(b"\x00" * 64)
+    write_envelope(tmp_path / "j.json", _args(source=str(src)))
+    assert main(["--job", str(tmp_path / "j.json"), "--check"]) == 0
+
+
+def test_claim_out_serialises_one_output(tmp_path):
+    out = tmp_path / "clip.mp4"
+    with claim_out(out) as staged:
+        assert staged.name == "clip.mp4"
+        assert staged.parent != tmp_path  # staged aside, never in place
+        with pytest.raises(OutputLocked):
+            with claim_out(out):
+                pass
+    with claim_out(out) as staged2:  # released on exit: claimable again
+        pass
+    # The lockfile is kept, never unlinked while locked: unlinking the
+    # live path orphans the inode, so two renders can each believe they
+    # hold the lock. The staged temp dir is still cleaned up.
+    assert out.with_name(out.name + ".lock").exists()
+    assert not staged2.parent.exists()

@@ -133,16 +133,23 @@ def test_image_only_runs_without_telemetry(tmp_path, capsys, monkeypatch) -> Non
         _variant(capabilities=frozenset({"image_only"}),
                  telemetry_format="none")))
     calls = []
-    monkeypatch.setattr(pipeline, "stabilize_image_only",
-                        lambda *args, **kw: calls.append(args) or {
-                            "output": Path(kw.get("output", "o.mp4")),
-                            "raw_bounce": 10.0, "corrected_bounce": 5.0,
-                            "inliers_med": 300})
+
+    def _fake_stabilize(*args, **kw):
+        # The CLI stages the render aside and publishes it into place, so
+        # the double honors the callee contract and produces its file.
+        calls.append(args)
+        Path(args[1]).write_bytes(b"stabilised bytes")
+        return {"output": Path(kw.get("output", "o.mp4")),
+                "raw_bounce": 10.0, "corrected_bounce": 5.0,
+                "inliers_med": 300}
+
+    monkeypatch.setattr(pipeline, "stabilize_image_only", _fake_stabilize)
     out = tmp_path / "o.mp4"
     rc = main([str(tmp_path / "x.mp4"), "--start", "0", "--dur", "1",
                "--image-only", "--out", str(out)])
     assert rc == 0
     assert len(calls) == 1  # reached the 2D pass, never a telemetry refusal
+    assert out.read_bytes() == b"stabilised bytes"  # staged, then published
     assert "image-only far bounce raw 10.00 -> corrected 5.00" \
         in capsys.readouterr().out
 

@@ -26,9 +26,10 @@ import numpy as np
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Stabilized, framed clip from a 360 .insv file")
-    ap.add_argument("source", help=".insv file")
-    ap.add_argument("--start", type=float, required=True)
-    ap.add_argument("--dur", type=float, required=True)
+    ap.add_argument("source", nargs="?", default=None, help=".insv file "
+                      "(or omitted with --job, which supplies it)")
+    ap.add_argument("--start", type=float, default=None)
+    ap.add_argument("--dur", type=float, default=None)
     ap.add_argument("--out", default=None, help="output mp4 (default: auto)")
     ap.add_argument("--tall", action="store_true",
                     help="9:16 vertical (default 4:3 landscape)")
@@ -200,9 +201,13 @@ def main(argv=None) -> int:
             return refuse(f"bad job envelope ({exc})",
                           "re-export the job from the GUI")
         try:
-            apply_envelope(a, env, argv)
+            apply_envelope(a, env, argv if argv is not None else sys.argv[1:])
         except ValueError as exc:
             return refuse(str(exc), "re-export the job from the GUI")
+    if a.source is None or a.start is None or a.dur is None:
+        return refuse("need source --start --dur (or a --job envelope "
+                      "supplying them)",
+                      "steadycut SOURCE --start S --dur D [--out clip.mp4]")
     if a.check:
         from steadycut.job import check_window
         ok, reason = check_window(a.source, a.start, a.dur)
@@ -233,11 +238,17 @@ def main(argv=None) -> int:
     # 1b. image-only mode: the bounded 2D pass IS the stabiliser. Used for
     #     cameras with no embedded IMU and for pre-stabilised footage.
     if a.image_only:
+        from steadycut.job import OutputLocked, claim_out
         out = (Path(a.out) if a.out
                else Path(f"clip_{int(a.start)}s_imageonly.mp4"))
         try:
-            res = stabilize_image_only(a.source, out, a.start, a.dur,
-                                       preset=a.preset)
+            with claim_out(out) as staged:
+                res = stabilize_image_only(a.source, staged, a.start, a.dur,
+                                           preset=a.preset)
+                publish(staged, out)
+        except OutputLocked as exc:
+            return refuse(str(exc), "wait for the other render to finish, "
+                                    "or pick another --out")
         except Exception as exc:
             return refuse(f"image-only pass failed ({exc})", "no clip claimed")
         cert["image_only"] = {"raw_bounce": res["raw_bounce"],
@@ -612,6 +623,7 @@ def main(argv=None) -> int:
         print(f"CLI| travel-holder pitch leash {pitch_tau:.1f}s "
               f"(policy {policy.name})")
     out = Path(a.out) if a.out else Path(f"clip_{int(a.start)}s.mp4")
+    from steadycut.job import OutputLocked, claim_out
     try:
         path_info: dict = {}
         pts = build_gyro_path(spec, stamp_offset_ms=offset_ms,
@@ -716,64 +728,83 @@ def main(argv=None) -> int:
             cert["level"] = {"applied": True, **lv}
             print(f"CLI| level shift {lv['shift_deg']:+.1f}deg "
                   f"(|g| {lv['g_norm']:.2f}, {lv['span_s']:.0f}s)")
-        render_path(spec, pts, out, preset=a.preset)
-        from steadycut.render import reframe as _rf
-        cert["stitch"] = dict(_rf.render.stitch_record)
-        st = cert["stitch"]
-        if st["method"] == "blend":
-            print(f"CLI| stitch blend (gain "
-                  f"{'+'.join(f'{g:.3f}' for g in st['gain'])}"
-                  f"{', measured' if st.get('gain_measured') else ', default'})")
-        else:
-            print("CLI| stitch legacy")
+        # The output is claimed before the first byte is rendered: gyro and
+        # 2D stages write a staged file under the lock, then publish()
+        # moves it into place, so two renders never publish one file and
+        # a crash never leaves a half-written clip behind.
+        with claim_out(out) as staged:
+            render_path(spec, pts, staged, preset=a.preset)
+            from steadycut.render import reframe as _rf
+            cert["stitch"] = dict(_rf.render.stitch_record)
+            st = cert["stitch"]
+            if st["method"] == "blend":
+                print(f"CLI| stitch blend (gain "
+                      f"{'+'.join(f'{g:.3f}' for g in st['gain'])}"
+                      f"{', measured' if st.get('gain_measured') else ', default'})")
+            else:
+                print("CLI| stitch legacy")
+
+            # 5. bounded 2D residual pass -- BEFORE the certificate, so the
+            #    numbers describe the file that is actually delivered rather
+            #    than the gyro stage underneath it. Its own track supplies
+            #    the inlier count the weak-tracking gate needs.
+            if not a.no_2d:
+                hybrid = tmp / "hybrid.mp4"
+                pre = hybrid_correct(staged, hybrid)
+                if float(np.median(pre.inliers)) < 150:
+                    cert["two_d"] = {"applied": False,
+                                     "reason": "weak tracking"}
+                    print("CLI| WARN weak tracking: skipping 2D pass, "
+                          "gyro clip stands")
+                else:
+                    # The pass is not always an improvement, so it has to
+                    # earn its place: measured on real windows it cut the
+                    # far-field residual on six of seven, and on the seventh
+                    # it more than DOUBLED the jitter while also raising the
+                    # rms. So the gyro clip stands whenever the pass makes
+                    # the far field worse -- judged on the delivered
+                    # quantity, at the delivered size, not on the pass's own
+                    # idea of its residual. Same rule the image-only path
+                    # already applies.
+                    gyro_score = far_field_score(staged, render_size=size)
+                    fixed_score = far_field_score(hybrid, render_size=size)
+                    if fixed_score["jitter_px"] <= gyro_score["jitter_px"]:
+                        # Never warp in place: write aside, then move into
+                        # place.
+                        publish(hybrid, staged)
+                        # Record what was actually run, read from the
+                        # production defaults rather than restated: the
+                        # certificate describes the delivered file, and that
+                        # includes the pass that produced it.
+                        import inspect
+                        hy = inspect.signature(hybrid_correct).parameters
+                        cert["two_d"] = {"applied": True,
+                                         "sigma": hy["sigma"].default,
+                                         "bound": hy["bound"].default,
+                                         "zoom": hy["zoom"].default,
+                                         "gyro": gyro_score,
+                                         "corrected": fixed_score}
+                        print("CLI| 2D residual pass applied")
+                    else:
+                        cert["two_d"] = {"applied": False,
+                                         "reason": "the pass made the far "
+                                         "field worse",
+                                         "gyro": gyro_score,
+                                         "corrected": fixed_score}
+                        print(f"CLI| 2D pass made the far field worse "
+                              f"(jitter {gyro_score['jitter_px']:.2f} -> "
+                              f"{fixed_score['jitter_px']:.2f} px): "
+                              f"gyro clip stands")
+            else:
+                cert["two_d"] = {"applied": False, "reason": "--no-2d"}
+            publish(staged, out)
+    except OutputLocked as exc:
+        return refuse(str(exc), "wait for the other render to finish, "
+                                "or pick another --out")
     except Exception as exc:
         return refuse(f"render failed ({exc})", "no clip claimed")
     print(f"CLI| wrote {out}")
     _mark("path+bake")
-
-    # 5. bounded 2D residual pass -- BEFORE the certificate, so the numbers
-    #    describe the file that is actually delivered rather than the gyro
-    #    stage underneath it. Its own track supplies the inlier count the
-    #    weak-tracking gate needs.
-    if not a.no_2d:
-        staged = tmp / "hybrid.mp4"
-        pre = hybrid_correct(out, staged)
-        if float(np.median(pre.inliers)) < 150:
-            cert["two_d"] = {"applied": False, "reason": "weak tracking"}
-            print("CLI| WARN weak tracking: skipping 2D pass, gyro clip stands")
-        else:
-            # The pass is not always an improvement, so it has to earn its
-            # place: measured on real windows it cut the far-field residual on
-            # six of seven, and on the seventh it more than DOUBLED the jitter
-            # while also raising the rms. So the gyro clip stands whenever the
-            # pass makes the far field worse -- judged on the delivered
-            # quantity, at the delivered size, not on the pass's own idea of
-            # its residual. Same rule the image-only path already applies.
-            gyro_score = far_field_score(out, render_size=size)
-            fixed_score = far_field_score(staged, render_size=size)
-            if fixed_score["jitter_px"] <= gyro_score["jitter_px"]:
-                # Never warp in place: write aside, then move into place.
-                publish(staged, out)
-                # Record what was actually run, read from the production
-                # defaults rather than restated: the certificate describes the
-                # delivered file, and that includes the pass that produced it.
-                import inspect
-                hy = inspect.signature(hybrid_correct).parameters
-                cert["two_d"] = {"applied": True,
-                                 "sigma": hy["sigma"].default,
-                                 "bound": hy["bound"].default,
-                                 "zoom": hy["zoom"].default,
-                                 "gyro": gyro_score, "corrected": fixed_score}
-                print("CLI| 2D residual pass applied")
-            else:
-                cert["two_d"] = {"applied": False,
-                                 "reason": "the pass made the far field worse",
-                                 "gyro": gyro_score, "corrected": fixed_score}
-                print(f"CLI| 2D pass made the far field worse "
-                      f"(jitter {gyro_score['jitter_px']:.2f} -> "
-                      f"{fixed_score['jitter_px']:.2f} px): gyro clip stands")
-    else:
-        cert["two_d"] = {"applied": False, "reason": "--no-2d"}
 
     # 6. residual certificate, measured on the delivered file with the
     #    validated estimator: the far field is the landscape, and it carries

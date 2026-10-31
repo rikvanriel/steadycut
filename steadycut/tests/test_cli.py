@@ -6,15 +6,19 @@ import pytest
 from steadycut.steadycut import build_parser, main, refuse
 
 
-def test_parser_requires_file_start_dur() -> None:
-    with pytest.raises(SystemExit):
-        build_parser().parse_args([])
-    a = build_parser().parse_args(["f.insv", "--start", "10", "--dur", "5"])
-    assert (a.source, a.start, a.dur) == ("f.insv", 10.0, 5.0)
-    assert a.tall is False and a.no_2d is False
-    b = build_parser().parse_args(
+def test_parser_leaves_window_to_main_or_job() -> None:
+    # source/start/dur are optional at parse level so a bare
+    # `steadycut --job gui_job.json` parses; main() refuses when neither
+    # argv nor the envelope supplies the full window.
+    a = build_parser().parse_args([])
+    assert (a.source, a.start, a.dur) == (None, None, None)
+    assert main([]) == 2
+    b = build_parser().parse_args(["f.insv", "--start", "10", "--dur", "5"])
+    assert (b.source, b.start, b.dur) == ("f.insv", 10.0, 5.0)
+    assert b.tall is False and b.no_2d is False
+    c = build_parser().parse_args(
         ["f.insv", "--start", "10", "--dur", "5", "--tall", "--pitch", "-14"])
-    assert b.tall is True and b.pitch == -14.0
+    assert c.tall is True and c.pitch == -14.0
 
 
 def test_refuse_returns_2_and_names_next_step(capsys) -> None:
