@@ -94,6 +94,15 @@ def build_parser() -> argparse.ArgumentParser:
                          "(gravity-leveling rev2: VQF-predicted body "
                          "gravity through the settled static formula, "
                          "innovation-frozen through turns).")
+    ap.add_argument("--job", default=None, metavar="PATH",
+                    help="clip-job envelope written by the GUI (versioned "
+                         "JSON): supplies every optional flag by argparse "
+                         "dest name. source/start/dur stay on argv and must "
+                         "match the envelope, so a stale job refuses instead "
+                         "of rendering the wrong window")
+    ap.add_argument("--check", action="store_true",
+                    help="validate the clip window (existence, duration, "
+                         "frame-snapped bounds) and exit without rendering")
     ap.add_argument("--yaw-bias-track", default=None, metavar="JSON",
                     help="time-varying yaw bias [[t, deg], ...], lerped: "
                          "FOE-measured travel-in-lens anchors for windows "
@@ -183,6 +192,22 @@ def main(argv=None) -> int:
     from steadycut.metrics.level import level_score
 
     a = build_parser().parse_args(argv)
+    if a.job is not None:
+        from steadycut.job import apply_envelope, load_envelope
+        try:
+            env = load_envelope(a.job)
+        except ValueError as exc:
+            return refuse(f"bad job envelope ({exc})",
+                          "re-export the job from the GUI")
+        try:
+            apply_envelope(a, env, argv)
+        except ValueError as exc:
+            return refuse(str(exc), "re-export the job from the GUI")
+    if a.check:
+        from steadycut.job import check_window
+        ok, reason = check_window(a.source, a.start, a.dur)
+        print(f"CLI| check {'ok' if ok else 'REFUSED'}: {reason}")
+        return 0 if ok else 2
     tmp = Path(tempfile.mkdtemp(prefix="steadycut-cli-"))
     cert: dict = {"source": str(a.source), "start": a.start, "dur": a.dur}
 
