@@ -1,0 +1,840 @@
+"""Clip-picker main window: preview + job panel + transport.
+
+PySide6 lives only in this file and widgets.py, both under the `[gui]`
+extra. The CLI never imports them; the translation to argv/envelope and
+the process-group runner live in backend.py/runner.py (Qt-free).
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import threading
+from pathlib import Path
+
+import cv2
+import numpy as np
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
+from PySide6.QtGui import QAction, QImage
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
+                               QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+                               QLineEdit, QMainWindow, QMessageBox,
+                               QPlainTextEdit, QProgressBar, QPushButton,
+                               QSplitter, QVBoxLayout, QWidget)
+
+from steadycut.gui import backend as B
+from steadycut.gui import runner as R
+from steadycut.gui.widgets import FilmStrip, GyroStrip, Preview
+
+PRESETS = ("medium", "fast", "ultrafast", "slow")
+THUMB_COUNT = 16
+
+
+def qimage_from_bgr(frame: np.ndarray, width: int = 0) -> QImage:
+    """BGR OpenCV frame to a detached RGB QImage, optionally scaled."""
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    h, w = rgb.shape[:2]
+    img = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+    if width and w != width:
+        img = img.scaledToWidth(width,
+                                Qt.TransformationMode.SmoothTransformation)
+    return img
+
+
+class LoaderThread(QThread):
+    """Open-file background work: probe, identify, proxy, gyro, thumbs."""
+
+    note = Signal(str)
+    proxy_ready = Signal(str, dict, float, dict)
+    telemetry_ready = Signal(object, object)
+    thumbs_ready = Signal(object)
+    failed = Signal(str, str)
+    proxy_only = False
+
+    def __init__(self, source: str, camera_hint: str | None,
+                 stitch: str, camera: dict | None = None,
+                 profile=None, span: tuple | None = None,
+                 pitch: tuple | None = None,
+                 proxy_only: bool = False, parent=None):
+        super().__init__(parent)
+        self.source = source
+        self.camera_hint = camera_hint
+        self.stitch = stitch
+        self.camera = camera
+        self.profile = profile
+        self._span_attr = span
+        self._pitch_attr = pitch
+        self._proxy_only = proxy_only
+
+    def run(self):
+        try:
+            self._run()
+        except Exception as exc:  # keep the window alive, show the hint
+            self.failed.emit(f"open failed ({exc})",
+                             "is this a camera-original file?")
+
+    def _run(self):
+        from steadycut.job import build_proxy
+
+        if not self._proxy_only:
+            self.note.emit("probing media …")
+            total = B.media_total(self.source)
+            p0, pdur = B.proxy_span(total)
+            self.note.emit("identifying camera …")
+            ident = B.identify_camera(self.source, self.camera_hint)
+            if ident["status"] != "ok":
+                self.failed.emit(ident.get("reason", "unidentified body"),
+                                 ident.get("action", "see the CLI gates"))
+                return
+            profile = ident.get("profile")
+            camera = {"model": ident.get("model"),
+                      "serial": ident.get("serial")}
+            manifest = B.current_proxy_manifest(self.source, camera,
+                                                self.stitch)
+            self._camera = camera
+            self._ident = ident
+            self._total = total
+            self._span = (p0, pdur)
+        else:
+            assert self._span_attr is not None, "proxy rebuild needs a span"
+            p0, pdur = self._span_attr
+            camera = self.camera
+            manifest = B.current_proxy_manifest(self.source, camera,
+                                                self.stitch)
+        video, meta = B.proxy_paths(manifest["fingerprint"])
+        if not (video.exists() and B.proxy_is_fresh(meta, self.source,
+                                                   camera, self.stitch)):
+            self.note.emit("building proxy (ultrafast, one frozen pitch) …")
+            if not self._proxy_only:
+                pitch, info = B.frozen_pitch(self.source, p0,
+                                             self._ident.get("profile"))
+                self._profile = self._ident.get("profile")
+            elif self._pitch_attr is not None:
+                pitch, info = self._pitch_attr
+            else:
+                pitch, info = B.frozen_pitch(self.source, p0, self.profile)
+            video.parent.mkdir(parents=True, exist_ok=True)
+            build_proxy(self.source, p0, pdur, video, pitch,
+                        size=B.PROXY_SIZE)
+            meta.write_text(json.dumps(manifest, indent=1))
+            self._pitch, self._pitch_info = pitch, info
+        elif not hasattr(self, "_pitch"):
+            from steadycut.core.profiles import load_for
+
+            stored = load_for(self.source)
+            self._pitch = (stored.pitch if stored is not None
+                           and stored.pitch is not None else -12.0)
+            self._pitch_info = {"layer": "stored-or-constant",
+                                "usable": stored is not None}
+        self.proxy_ready.emit(str(video), manifest, float(self._pitch),
+                              dict(self._pitch_info))
+        if self._proxy_only:
+            self._emit_thumbs(video, p0, pdur)
+            return
+        self.note.emit("loading gyro …")
+        self._emit_gyro(p0, pdur)
+        self._emit_thumbs(video, p0, pdur)
+
+    def _emit_gyro(self, p0: float, pdur: float):
+        from steadycut.ingest.telemetry import read_telemetry
+
+        profile = getattr(self, "_profile", None) or self.profile
+        imu = read_telemetry(str(self.source), profile=profile)
+        t = np.asarray(imu.time_s, dtype=float)
+        mag = np.linalg.norm(np.asarray(imu.gyro, dtype=float),
+                             axis=1)  # telemetry gyro is already deg/s
+        mask = (t >= p0) & (t < p0 + pdur)
+        if not mask.any():
+            return
+        t, mag = t[mask], mag[mask]
+        step = max(1, len(t) // 1200)
+        self.telemetry_ready.emit(t[::step].tolist(), mag[::step].tolist())
+
+    def _emit_thumbs(self, video: Path, p0: float, pdur: float):
+        cap = cv2.VideoCapture(str(video))
+        thumbs = []
+        try:
+            for i in range(THUMB_COUNT):
+                t = p0 + (i + 0.5) / THUMB_COUNT * pdur
+                cap.set(cv2.CAP_PROP_POS_MSEC, (t - p0) * 1000.0)
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                thumbs.append((t, qimage_from_bgr(frame, width=144)))
+        finally:
+            cap.release()
+        self.thumbs_ready.emit(thumbs)
+
+
+class Main(QMainWindow):
+    """Top bar, preview + job panel, filmstrip, gyro, transport."""
+
+    DEG_PER_PX = 0.05
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Steadycut clip-picker")
+        self.resize(1100, 720)
+        self.state = B.GuiState()
+        self.job_state: B.GuiState | None = None
+        self.total = 0.0
+        self.proxy_span = (0.0, 60.0)
+        self.proxy_path: str | None = None
+        self.proxy_pitch = -12.0
+        self.camera: dict | None = None
+        self.profile = None
+        self.ident_label = "no media"
+        self.cap: cv2.VideoCapture | None = None
+        self.fps = 29.97
+        self.play_t = 0.0
+        self.playing = False
+        self.out_dirty = False
+        self.rendered_fp: str | None = None
+        self.proc = None
+        self.proc_fh = None
+        self.log_reader = None
+        self.log_path: Path | None = None
+        self.loader: LoaderThread | None = None
+        self._drag_anchor: tuple | None = None
+        self._build()
+        self._tick = QTimer(self)
+        self._tick.setInterval(66)
+        self._tick.timeout.connect(self._on_tick)
+        self._poll = QTimer(self)
+        self._poll.setInterval(120)
+        self._poll.timeout.connect(self._poll_job)
+
+    # -- layout ---------------------------------------------------------
+    def _build(self):
+        from steadycut.framing.policies import policy_names
+
+        self.topbar = QLabel("no media — File > Open media (.insv)")
+        central = QWidget()
+        self.setCentralWidget(central)
+        outer = QVBoxLayout(central)
+        outer.addWidget(self.topbar)
+
+        mid = QHBoxLayout()
+        left = QVBoxLayout()
+        self.prev = Preview(self)
+        self.prev.dragged.connect(self._on_aim_drag)
+        left.addWidget(self.prev, 1)
+        self.aimlbl = QLabel("aim: unset → policy owns it")
+        self.aimlbl.setStyleSheet("color:#333")
+        self.aimlbl.setWordWrap(True)
+        left.addWidget(self.aimlbl)
+        reset_row = QHBoxLayout()
+        self.reset_aim = QPushButton("Reset aim")
+        self.reset_aim.clicked.connect(self._on_reset_aim)
+        reset_row.addWidget(self.reset_aim)
+        reset_row.addStretch(1)
+        left.addLayout(reset_row)
+        mid.addLayout(left, 1)
+
+        job = QGroupBox("Job")
+        jl = QVBoxLayout(job)
+        form = QFormLayout()
+        self.e_in = QLineEdit("00:10.0")
+        self.e_out = QLineEdit("00:25.0")
+        self.e_in.editingFinished.connect(self._on_edits)
+        self.e_out.editingFinished.connect(self._on_edits)
+        form.addRow("in", self.e_in)
+        form.addRow("out", self.e_out)
+        self.framing = QComboBox()
+        self.framing.addItems(policy_names())
+        self.framing.setCurrentText(self.state.framing)
+        self.framing.currentTextChanged.connect(self._on_option)
+        form.addRow("framing", self.framing)
+        self.aspect = QComboBox()
+        self.aspect.addItems(["4:3 — 960x720", "9:16 tall"])
+        self.aspect.currentIndexChanged.connect(self._on_aspect)
+        form.addRow("aspect", self.aspect)
+        self.stitch = QComboBox()
+        self.stitch.addItems(["legacy", "blend"])
+        self.stitch.currentTextChanged.connect(self._on_stitch)
+        form.addRow("stitch", self.stitch)
+        self.preset = QComboBox()
+        self.preset.addItems(list(PRESETS))
+        self.preset.currentTextChanged.connect(self._on_option)
+        form.addRow("preset", self.preset)
+        self.no_2d = QCheckBox("skip 2D pass")
+        self.no_2d.toggled.connect(self._on_option)
+        form.addRow("", self.no_2d)
+        self.sync_lbl = QLabel("sync: auto (measured at render)")
+        form.addRow("sync", self.sync_lbl)
+        self.aimv = QLabel("yaw — · pitch — (unset → policy)")
+        self.aimv.setWordWrap(True)
+        form.addRow("aim", self.aimv)
+        self.valid_lbl = QLabel("validity: no media")
+        self.valid_lbl.setWordWrap(True)
+        form.addRow("validity", self.valid_lbl)
+        self.fp_lbl = QLabel("fingerprint: —")
+        form.addRow("fingerprint", self.fp_lbl)
+        jl.addLayout(form)
+        self.e_destination = QLineEdit()
+        self.e_destination.setPlaceholderText("output .mp4 (auto)")
+        self.e_destination.editingFinished.connect(self._on_out_edit)
+        jl.addWidget(self.e_destination)
+        jl.addStretch(1)
+        self.render_btn = QPushButton("Render clip")
+        self.render_btn.clicked.connect(self.on_render)
+        jl.addWidget(self.render_btn)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.on_cancel)
+        self.cancel_btn.setEnabled(False)
+        jl.addWidget(self.cancel_btn)
+        self.copy_btn = QPushButton("Copy CLI command")
+        self.copy_btn.clicked.connect(self.on_copy)
+        jl.addWidget(self.copy_btn)
+        mid.addWidget(job)
+        outer.addLayout(mid, 1)
+
+        self.strip = FilmStrip(self)
+        self.strip.seeked.connect(self._on_seek)
+        self.strip.ranged.connect(self._on_range)
+        outer.addWidget(self.strip)
+        self.gyro = GyroStrip(self)
+        outer.addWidget(self.gyro)
+
+        trow = QHBoxLayout()
+        self.play = QPushButton("▶")
+        self.play.setFixedWidth(40)
+        self.play.clicked.connect(self.toggle)
+        trow.addWidget(self.play)
+        self.tc = QLabel("playhead --")
+        trow.addWidget(self.tc)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setVisible(False)
+        trow.addWidget(self.progress, 1)
+        self.status_lbl = QLabel("no media")
+        trow.addWidget(self.status_lbl)
+        outer.addLayout(trow)
+
+        self.refusal = QLabel()
+        self.refusal.setWordWrap(True)
+        self.refusal.setStyleSheet(
+            "color:#7a1010; background:#fde8e8; padding:6px")
+        self.refusal.setVisible(False)
+        outer.addWidget(self.refusal)
+        self.logview = QPlainTextEdit()
+        self.logview.setReadOnly(True)
+        self.logview.setMaximumBlockCount(400)
+        self.logview.setPlaceholderText("render log appears here")
+        self.logview.setMinimumHeight(90)
+        outer.addWidget(self.logview)
+
+        menu = self.menuBar().addMenu("File")
+        open_act = QAction("Open media…", self)
+        open_act.triggered.connect(self._on_open_dialog)
+        menu.addAction(open_act)
+        job_act = QAction("Load job JSON…", self)
+        job_act.triggered.connect(self._on_load_job)
+        menu.addAction(job_act)
+
+    # -- open / loader --------------------------------------------------
+    def _on_open_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open media", "", "Insta360 (*.insv);;All (*)")
+        if path:
+            self.open_media(path)
+
+    def open_media(self, path: str, out: str | None = None,
+                   hint: str | None = None):
+        if self.loader is not None and self.loader.isRunning():
+            self._status("loader busy — wait for the proxy, then retry")
+            return
+        self._stop_playback()
+        self._close_cap()
+        self.state = B.GuiState(source=path)
+        self.job_state = None
+        self.rendered_fp = None
+        self.out_dirty = out is not None
+        if out:
+            self.state.out = out
+        self.proxy_path = None
+        self.camera = None
+        self.profile = None
+        self.refusal.setVisible(False)
+        self.logview.clear()
+        self.prev.show_frame(None)
+        self.prev.overlay = "loading …"
+        self.prev.update()
+        self.strip.thumbs = []
+        self.gyro.set_series([], [])
+        self._status(f"opening {Path(path).name} …")
+        stitch = self.stitch.currentText()
+        self.loader = LoaderThread(path, hint, stitch)
+        self.loader.note.connect(self._status)
+        self.loader.proxy_ready.connect(self._on_proxy)
+        self.loader.telemetry_ready.connect(self._on_gyro)
+        self.loader.thumbs_ready.connect(self._on_thumbs)
+        self.loader.failed.connect(self._on_open_failed)
+        self.loader.start()
+
+    def _on_open_failed(self, msg: str, hint: str):
+        self._status("open refused")
+        self._refuse(msg, hint)
+        self.prev.overlay = "no media"
+        self.prev.update()
+
+    def _on_proxy(self, video: str, manifest: dict, pitch: float,
+                  info: dict):
+        self.proxy_path = video
+        self.proxy_pitch = pitch
+        loader = self.loader
+        if loader is not None and not loader._proxy_only:
+            self.camera = loader.camera
+            self.profile = getattr(loader, "_profile", None)
+            self.total = loader._total
+            self.proxy_span = loader._span
+            ident = loader._ident
+            self.ident_label = (
+                f"{ident.get('model')} via {ident.get('via')}")
+            p0, pdur = self.proxy_span
+            in_t = min(p0 + 10.0, p0 + pdur - 1.0)
+            out_t = min(in_t + 15.0, p0 + pdur)
+            self.strip.set_span(p0, p0 + pdur)
+            self._set_window(in_t, out_t, in_t)
+            self.e_destination.setText(
+                self.state.out or B.default_out(
+                    self.state.source, in_t, self.state.tall))
+        usable = info.get("usable", True)
+        self.prev.proxy_note = ("proxy · 720p · ready" if usable
+                                else "proxy · 720p · pitch fallback")
+        self._open_cap()
+        self._show_at(self.play_t)
+        self._refresh_meta()
+        self._status("proxy ready")
+
+    def _on_gyro(self, times, values):
+        self.gyro.set_series(times, values)
+        self.gyro.set_window(self.play_t, self.state.start,
+                             self.state.start + self.state.dur)
+
+    def _on_thumbs(self, thumbs):
+        self.strip.thumbs = list(thumbs)
+        self.strip.update()
+
+    def _on_stitch(self, text: str):
+        self._panel_to_state()
+        self._refresh_meta()
+        if (self.proxy_path is None or self.camera is None
+                or self.loader is not None and self.loader.isRunning()):
+            return
+        self._status("stitch changed — rebuilding proxy …")
+        self.loader = LoaderThread(
+            self.state.source, None, text, camera=self.camera,
+            profile=self.profile, span=self.proxy_span,
+            pitch=(self.proxy_pitch, {"layer": "kept", "usable": True}),
+            proxy_only=True)
+        self.loader.note.connect(self._status)
+        self.loader.proxy_ready.connect(self._on_proxy)
+        self.loader.thumbs_ready.connect(self._on_thumbs)
+        self.loader.failed.connect(self._on_open_failed)
+        self.loader.start()
+
+    def _status(self, text: str):
+        self.status_lbl.setText(text)
+
+    def _refuse(self, msg: str, hint: str):
+        self.refusal.setText(f"REFUSED: {msg} — next: {hint}")
+        self.refusal.setVisible(True)
+
+    def _clear_refusal(self):
+        self.refusal.setVisible(False)
+
+    # -- panel <-> state ------------------------------------------------
+    def _panel_to_state(self):
+        s = self.state
+        try:
+            s.start = B.parse_time(self.e_in.text())
+            s.dur = max(0.5, B.parse_time(self.e_out.text()) - s.start)
+        except ValueError:
+            pass
+        s.framing = self.framing.currentText()
+        s.tall = self.aspect.currentIndex() == 1
+        s.stitch = self.stitch.currentText()
+        s.preset = self.preset.currentText()
+        s.no_2d = self.no_2d.isChecked()
+        dest = self.e_destination.text().strip()
+        s.out = dest or B.default_out(s.source, s.start, s.tall)
+        self.e_destination.setText(s.out)
+
+    def _set_window(self, in_t: float, out_t: float, play_t: float):
+        self.e_in.setText(B.fmt_time(in_t))
+        self.e_out.setText(B.fmt_time(out_t))
+        self.play_t = play_t
+        self.state.start = in_t
+        self.state.dur = max(0.5, out_t - in_t)
+        if self.state.source and not self.out_dirty:
+            self.e_destination.setText(
+                B.default_out(self.state.source, in_t, self.state.tall))
+        self.strip.set_window(play_t, in_t, out_t)
+        self.gyro.set_window(play_t, in_t, out_t)
+        self.tc.setText(f"playhead {B.fmt_time(play_t)}  |  "
+                        f"out {B.fmt_time(out_t)}")
+        self._refresh_meta()
+
+    def _on_option(self, *args):
+        self._panel_to_state()
+        self._refresh_meta()
+
+    def _on_aspect(self, *args):
+        self._panel_to_state()
+        if not self.out_dirty:
+            self.e_destination.setText(
+                B.default_out(self.state.source, self.state.start,
+                              self.state.tall))
+            self._panel_to_state()
+        self._refresh_meta()
+
+    def _on_out_edit(self):
+        self.out_dirty = bool(self.e_destination.text().strip())
+        self._panel_to_state()
+        self._refresh_meta()
+
+    def _on_edits(self):
+        try:
+            in_t = B.parse_time(self.e_in.text())
+            out_t = B.parse_time(self.e_out.text())
+        except ValueError:
+            self._set_window(self.state.start,
+                             self.state.start + self.state.dur, self.play_t)
+            return
+        p0, pdur = self.proxy_span
+        in_t = min(max(in_t, p0), p0 + pdur - 0.5)
+        out_t = min(max(out_t, in_t + 0.5), p0 + pdur)
+        self._set_window(in_t, out_t, min(max(self.play_t, in_t), out_t))
+        self._show_at(self.play_t)
+
+    def _refresh_meta(self):
+        self._panel_to_state()
+        fp = B.fingerprint_of(self.state)
+        if self.rendered_fp is None:
+            self.fp_lbl.setText(f"{fp} · unrendered")
+        elif fp == self.rendered_fp:
+            self.fp_lbl.setText(f"{fp} · current")
+        else:
+            self.fp_lbl.setText(f"{fp} · modified since render")
+        ok, reason = B.check_state(
+            self.state, duration_fn=(lambda s: self.total)
+            if self.total else None)
+        if not self.state.source:
+            self.valid_lbl.setText("validity: no media")
+        elif ok:
+            self.valid_lbl.setText("● gates pass")
+        else:
+            self.valid_lbl.setText(f"○ {reason}")
+        total = f" · {self.total:.0f}s" if self.total else ""
+        self.topbar.setText(
+            f"{Path(self.state.source).name if self.state.source else '—'}"
+            f"{total} · {self.ident_label}")
+        self._refresh_aim()
+
+    def _refresh_aim(self):
+        yaw, pitch = self.state.yaw_bias, self.state.pitch
+        if not yaw and pitch is None:
+            self.aimlbl.setText("aim: unset → policy owns it")
+            self.aimv.setText("yaw — · pitch — (policy)")
+        else:
+            how = (f"pitch {pitch:+.1f}° (manual)" if pitch is not None
+                   else "pitch auto")
+            self.aimlbl.setText(f"aim override: yaw-bias {yaw:+.1f}°, {how}")
+            self.aimv.setText(f"yaw {yaw:+.1f}° · {how}")
+
+    def _on_aim_drag(self, dx_px: float, dy_px: float):
+        if self._drag_anchor is None:
+            self._drag_anchor = (self.state.yaw_bias,
+                                 (self.state.pitch if self.state.pitch
+                                  is not None else self.proxy_pitch),
+                                 dx_px, dy_px)
+            return
+        yaw0, pitch0, x0, y0 = self._drag_anchor
+        self.state.yaw_bias = round(yaw0 + (dx_px - x0) * self.DEG_PER_PX, 2)
+        self.state.pitch = round(pitch0 - (dy_px - y0) * self.DEG_PER_PX, 1)
+        self._refresh_aim()
+        self._refresh_meta()
+
+    def _on_reset_aim(self):
+        self._drag_anchor = None
+        self.state.yaw_bias = 0.0
+        self.state.pitch = None
+        self._refresh_aim()
+        self._refresh_meta()
+
+    def mouseReleaseEvent(self, ev):
+        self._drag_anchor = None
+        super().mouseReleaseEvent(ev)
+
+    # -- preview / transport -------------------------------------------
+    def _open_cap(self):
+        self._close_cap()
+        if not self.proxy_path:
+            return
+        self.cap = cv2.VideoCapture(self.proxy_path)
+        fps = self.cap.get(cv2.CAP_PROP_FPS)
+        self.fps = float(fps) if fps and fps > 1 else 29.97
+
+    def _close_cap(self):
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+
+    def _show_at(self, t: float):
+        if self.cap is None or self.proxy_path is None:
+            return
+        p0, _ = self.proxy_span
+        self.cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, (t - p0)) * 1000.0)
+        ok, frame = self.cap.read()
+        if ok:
+            self.prev.overlay = (f"{Path(self.state.source).name} · "
+                                 f"{B.fmt_time(t)}")
+            self.prev.show_frame(qimage_from_bgr(frame))
+
+    def _on_seek(self, t: float):
+        self.play_t = t
+        self._set_window(self.state.start,
+                         self.state.start + self.state.dur, t)
+        self._show_at(t)
+
+    def _on_range(self, in_t: float, out_t: float):
+        self._set_window(in_t, out_t,
+                         min(max(self.play_t, in_t), out_t))
+        self._show_at(self.play_t)
+
+    def toggle(self):
+        if self.cap is None:
+            return
+        self.playing = not self.playing
+        self.play.setText("⏸" if self.playing else "▶")
+        if self.playing:
+            self._tick.start()
+        else:
+            self._tick.stop()
+
+    def _stop_playback(self):
+        self.playing = False
+        self.play.setText("▶")
+        self._tick.stop()
+
+    def _on_tick(self):
+        if not self.playing or self.cap is None:
+            return
+        p0, pdur = self.proxy_span
+        target = self.play_t + self._tick.interval() / 1000.0
+        in_t = self.state.start
+        out_t = self.state.start + self.state.dur
+        if target >= out_t or target >= p0 + pdur:
+            self.cap.set(cv2.CAP_PROP_POS_MSEC, (in_t - p0) * 1000.0)
+            ok, frame = self.cap.read()
+            self.play_t = in_t if ok else p0
+            if ok:
+                self.prev.show_frame(qimage_from_bgr(frame))
+        else:
+            for _ in range(12):
+                pos = (self.cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0 + p0)
+                if pos >= target - 1e-3:
+                    break
+                ok, frame = self.cap.read()
+                if not ok:
+                    break
+                self.play_t = pos
+                self.prev.show_frame(qimage_from_bgr(frame))
+        self._set_window(in_t, out_t, self.play_t)
+
+    def keyPressEvent(self, ev):
+        from PySide6.QtWidgets import QLineEdit as _LE
+
+        if isinstance(QApplication.focusWidget(), _LE):
+            super().keyPressEvent(ev)
+            return
+        step = 1.0 / self.fps
+        if ev.key() == Qt.Key.Key_I:
+            self._set_window(min(self.play_t, self.state.start
+                                 + self.state.dur - 0.5),
+                             self.state.start + self.state.dur, self.play_t)
+        elif ev.key() == Qt.Key.Key_O:
+            self._set_window(self.state.start,
+                             max(self.play_t, self.state.start + 0.5),
+                             self.play_t)
+        elif ev.key() == Qt.Key.Key_Space:
+            self.toggle()
+        elif ev.key() == Qt.Key.Key_Left:
+            self._on_seek(max(self.proxy_span[0],
+                              self.play_t - step))
+        elif ev.key() == Qt.Key.Key_Right:
+            self._on_seek(min(self.proxy_span[0] + self.proxy_span[1],
+                              self.play_t + step))
+        else:
+            super().keyPressEvent(ev)
+
+    # -- render ---------------------------------------------------------
+    def on_render(self):
+        self._panel_to_state()
+        ok, reason = B.check_state(self.state)
+        if not ok:
+            self._refuse(reason, "adjust in/out, then Render again")
+            return
+        if self.proc is not None and self.proc.poll() is None:
+            self._status("a render is already running")
+            return
+        self._clear_refusal()
+        self.job_state = B.GuiState(**vars(self.state))
+        out = Path(self.state.out)
+        env_path = out.with_suffix(".job.json")
+        base = Path(self.state.source).parent
+        B.write_job(self.job_state, env_path, base=base)
+        self.log_path = out.with_suffix(".render.log")
+        self.logview.clear()
+        self.logview.appendPlainText(
+            f"$ {' '.join(B.job_argv(self.job_state, env_path))}")
+        self.proc, self.proc_fh = R.start_job(
+            B.job_argv(self.job_state, env_path), self.log_path)
+        self.log_reader = open(self.log_path, "rb")
+        self.render_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)
+        self._status("rendering …")
+        self._poll.start()
+
+    def _poll_job(self):
+        if self.proc is None:
+            return
+        chunk = self.log_reader.read() if self.log_reader else b""
+        if chunk:
+            text = chunk.decode("utf-8", "replace")
+            self.logview.appendPlainText(text.rstrip())
+            for line in text.splitlines():
+                stage = B.stage_of(line)
+                if stage == "done":
+                    self.progress.setRange(0, 100)
+                    self.progress.setValue(100)
+                elif stage is not None:
+                    frac = B.stage_fraction(stage)
+                    if frac is None:
+                        self.progress.setRange(0, 0)
+                    else:
+                        self.progress.setRange(0, 100)
+                        self.progress.setValue(int(frac * 100))
+                    self._status(f"rendering: {stage} …")
+        if self.proc.poll() is None:
+            return
+        self._poll.stop()
+        self._finish_job(self.proc.poll())
+
+    def _finish_job(self, rc: int):
+        rest = self.log_reader.read() if self.log_reader else b""
+        if rest:
+            self.logview.appendPlainText(
+                rest.decode("utf-8", "replace").rstrip())
+        if self.log_reader:
+            self.log_reader.close()
+            self.log_reader = None
+        if self.proc_fh:
+            self.proc_fh.close()
+            self.proc_fh = None
+        log_text = B.tail_bytes(self.log_path) if self.log_path else ""
+        out = Path(self.job_state.out) if self.job_state else None
+        if rc == 0:
+            self.rendered_fp = B.fingerprint_of(self.job_state)
+            cert_path = out.with_suffix(".cert.json") if out else None
+            extra = (f" · certificate {cert_path.name}"
+                     if cert_path and cert_path.exists() else "")
+            self._status(f"wrote {out}{extra}")
+            self._refresh_cert_sync(cert_path)
+        else:
+            refusals = B.extract_refusals(log_text)
+            if refusals:
+                msg, hint = refusals[-1]
+                self._refuse(msg, hint or "see the render log below")
+            else:
+                self._refuse(f"render exited {rc}",
+                             "see the render log below")
+            self._status(f"render failed (exit {rc})")
+        self._refresh_meta()
+        self.proc = None
+        self.progress.setVisible(False)
+        self.render_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+
+    def _refresh_cert_sync(self, cert_path):
+        try:
+            cert = json.loads(Path(cert_path).read_text())
+        except (OSError, ValueError, TypeError):
+            return
+        sync = cert.get("sync", {})
+        if sync:
+            self.sync_lbl.setText(
+                f"sync: {sync.get('offset_applied', 0):+.0f}ms "
+                f"r {sync.get('r', 0):+.2f} (rendered)")
+
+    def on_cancel(self):
+        if self.proc is None or self.proc.poll() is not None:
+            return
+        self.cancel_btn.setEnabled(False)
+        self._status("cancelling (TERM the group) …")
+        threading.Thread(target=self._cancel_blocking,
+                         daemon=True).start()
+
+    def _cancel_blocking(self):
+        outcome = R.cancel(self.proc, grace_s=5.0)
+        self._status(f"cancelling … ({outcome})")
+
+    def on_copy(self):
+        self._panel_to_state()
+        cmd = B.literal_shell(self.state)
+        QApplication.clipboard().setText(cmd)
+        self.logview.appendPlainText(f"$ {cmd}")
+        self._status("copied equivalent CLI command")
+
+    def _on_load_job(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load job JSON", "", "Job (*.json)")
+        if not path:
+            return
+        from steadycut.job import load_envelope
+
+        try:
+            env = load_envelope(path)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Bad job envelope",
+                                f"{exc}\nRe-export the job from the GUI.")
+            return
+        self._panel_to_state()
+        B.fill_state_from_args(self.state, env["args"])
+        src = self.state.source
+        self.framing.setCurrentText(self.state.framing)
+        self.aspect.setCurrentIndex(1 if self.state.tall else 0)
+        self.stitch.setCurrentText(self.state.stitch)
+        self.preset.setCurrentText(self.state.preset)
+        self.no_2d.setChecked(self.state.no_2d)
+        self.e_destination.setText(self.state.out)
+        if src and Path(src).exists() and self.proxy_path is None:
+            self.open_media(src)
+        else:
+            self._set_window(self.state.start,
+                             self.state.start + self.state.dur,
+                             self.state.start)
+            self._refresh_meta()
+
+
+def main(argv=None) -> int:
+    """Entry point: `steadycut-gui [source] [--out]`."""
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Steadycut clip-picker")
+    ap.add_argument("source", nargs="?", default=None)
+    ap.add_argument("--out", default=None)
+    args = ap.parse_args(argv)
+    app = QApplication(sys.argv[:1])
+    w = Main()
+    w.show()
+    if args.source:
+        w.open_media(args.source, out=args.out)
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

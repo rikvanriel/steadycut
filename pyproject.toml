@@ -44,6 +44,12 @@ dev = [
     # decomposition is not worth making every install carry scipy.
     "scipy>=1.11",
 ]
+gui = [
+    # Clip-picker (steadycut.gui, entry point steadycut-gui). PySide6
+    # lives only behind this extra: the CLI never imports Qt, so the
+    # base install stays Qt-free (pinned by tests/test_gui.py).
+    "PySide6>=6.7",
+]
 ml = [
     # Assist-mode labelling only (steadycut.framing.assist): three pinned
     # models behind steadycut.models.ensure(), never imported by the base
@@ -59,6 +65,7 @@ ml = [
 [project.scripts]
 steadycut = "steadycut.steadycut:main"
 steadycut-label = "steadycut.framing.labeller:main"
+steadycut-gui = "steadycut.gui.app:main"
 
 [project.urls]
 Homepage = "https://github.com/rikvanriel/steadycut"
