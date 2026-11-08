@@ -113,6 +113,30 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def apply_yaw_bias_track(pts, track_path):
+    """Add a time-varying yaw bias from a [[t, deg], ...] JSON track.
+
+    Anchors are euler degrees, so they are UNWRAPPED before lerping: a
+    seam-crossing follow (170 -> -170, i.e. 170 -> 190) then takes the
+    short way. Lerping the wrapped anchors interpolates the long way
+    round (~340 deg of spurious swing) that no downstream unwrap can
+    repair, because the sampled series never jumps.
+
+    Returns (new_pts, n_anchors).
+    """
+    import dataclasses
+
+    from steadycut.render.reframe import (
+        lerp_bias_anchors, unwrap_deg_series)
+    anchors = sorted(json.load(open(track_path)),
+                     key=lambda r: r[0])
+    _bias = unwrap_deg_series([b for _, b in anchors])
+    anchors = [(t, float(b)) for (t, _), b in zip(anchors, _bias)]
+    return ([dataclasses.replace(p, yaw=float(p.yaw)
+                                 + lerp_bias_anchors(anchors, p.t))
+             for p in pts], len(anchors))
+
+
 def launch_gui(source: str | None = None,
                out: str | None = None) -> int:
     """Open the clip-picker GUI. Imported lazily so the CLI never needs Qt.
@@ -727,23 +751,9 @@ def main(argv=None) -> int:
             cert["pitch_aim_deg"] = a.pitch_aim
             print(f"CLI| pitch aim {a.pitch_aim:+.1f}deg (absolute)")
         if a.yaw_bias_track:
-            import dataclasses
-            anchors = sorted(json.load(open(a.yaw_bias_track)),
-                             key=lambda r: r[0])
-
-            def _lerp(tv):
-                if tv <= anchors[0][0]:
-                    return anchors[0][1]
-                for (t0, b0), (t1, b1) in zip(anchors, anchors[1:]):
-                    if tv <= t1:
-                        f = (tv - t0) / (t1 - t0) if t1 > t0 else 0.0
-                        return b0 + f * (b1 - b0)
-                return anchors[-1][1]
-
-            pts = [dataclasses.replace(p, yaw=float(p.yaw) + _lerp(p.t))
-                   for p in pts]
+            pts, n_anchors = apply_yaw_bias_track(pts, a.yaw_bias_track)
             cert["yaw_bias_track"] = a.yaw_bias_track
-            print(f"CLI| yaw bias track {len(anchors)} anchors")
+            print(f"CLI| yaw bias track {n_anchors} anchors")
         # B2 fix: --level-vqf REPLACES the static shift (its shifts are
         # absolute, same formula). On refusal the static path applies as
         # the safe default; the cert records which leveller ran.

@@ -154,6 +154,67 @@ class ControlPoint:
     fov: float = 100.0
 
 
+def wrap_deg(angle):
+    """Wrap angle(s) in degrees into v360's range, [-180, 180).
+
+    v360 hard-errors beyond +-180 (measured: yaw=195 refuses with
+    "Numerical result out of range"), so every euler value emitted to a
+    filtergraph or a sendcmd file passes through here. Works on scalars
+    and numpy arrays. In-range values pass through unchanged, bit for
+    bit (the modulo form is not an identity in floating point).
+    """
+    a = np.asarray(angle, dtype=float)
+    wrapped = (a + 180.0) % 360.0 - 180.0
+    same = np.where((a >= -180.0) & (a < 180.0), a, wrapped)
+    if np.ndim(angle) == 0:
+        return float(same)
+    return same
+
+
+def unwrap_deg_series(vals_deg) -> np.ndarray:
+    """Unwrap a degree series so consecutive samples take the short way.
+
+    `np.unwrap` works in radians; this is the degree spelling used for
+    every euler series before interpolation. A series that never
+    approaches the seam is returned unchanged.
+    """
+    return np.degrees(np.unwrap(np.radians(np.asarray(vals_deg, dtype=float))))
+
+
+def interp_angle_deg(times, knot_t, knot_deg) -> np.ndarray:
+    """Linear-interpolate an angle series across the seam.
+
+    Unwrap the knots, interpolate, wrap back into v360's range -- the
+    one unwrap-interpolate-wrap sequence every euler emission path
+    shares. A skier crossing from in front to behind the camera drives
+    the view yaw through +-180; interpolating the wrapped values takes
+    the long way round (a ~358-degree violent spin), while this takes
+    the short way and keeps every emitted value in range.
+    """
+    unwrapped = np.unwrap(np.radians(np.asarray(knot_deg, dtype=float)))
+    interp = np.interp(np.asarray(times, dtype=float),
+                       np.asarray(knot_t, dtype=float), unwrapped)
+    return wrap_deg(np.degrees(interp))
+
+
+def lerp_bias_anchors(anchors, tv) -> float:
+    """Lerp a [(t, unwrapped-deg)] anchor list at media time `tv`.
+
+    The anchors must already be unwrapped (see unwrap_deg_series): this
+    lerps raw numbers, so wrapped anchors crossing the seam interpolate
+    the long way round. Clamps past the ends; a zero-length span holds
+    its start. Split out so the CLI's --yaw-bias-track path is testable
+    through this function instead of only through its helpers.
+    """
+    if tv <= anchors[0][0]:
+        return anchors[0][1]
+    for (t0, b0), (t1, b1) in zip(anchors, anchors[1:]):
+        if tv <= t1:
+            f = (tv - t0) / (t1 - t0) if t1 > t0 else 0.0
+            return b0 + f * (b1 - b0)
+    return anchors[-1][1]
+
+
 def build_command_file(path: list[ControlPoint], per_frame: bool = True,
                        fps: float = 29.97) -> str:
     """Render control points as sendcmd commands.
@@ -194,11 +255,13 @@ def build_command_file(path: list[ControlPoint], per_frame: bool = True,
 
     if len(points) == 1:
         only = points[0]
-        yaw = (only.yaw + 180.0) % 360.0 - 180.0  # v360 range, see below
+        yaw = wrap_deg(only.yaw)  # v360 range, see wrap_deg
+        pitch = wrap_deg(only.pitch)
+        roll = wrap_deg(only.roll)
         return (
             f"{only.t:.6f} v360@view yaw {yaw:.4f};\n"
-            f"{only.t:.6f} v360@view pitch {only.pitch:.4f};\n"
-            f"{only.t:.6f} v360@view roll {only.roll:.4f};\n"
+            f"{only.t:.6f} v360@view pitch {pitch:.4f};\n"
+            f"{only.t:.6f} v360@view roll {roll:.4f};\n"
             f"{only.t:.6f} v360@view h_fov {only.fov:.4f};\n"
         )
 
@@ -212,14 +275,9 @@ def build_command_file(path: list[ControlPoint], per_frame: bool = True,
             if name in ("yaw", "pitch", "roll"):
                 # Angles wrap: interpolate on the unwrapped series (a trend
                 # that ramps through +-180 would otherwise snap across the
-                # cut mid-window), then wrap back into v360's range. v360
-                # hard-errors beyond +-180 (measured: yaw=195 refuses with
-                # "Numerical result out of range"), so the wrap is load
-                # bearing, not cosmetic. In-range values pass through
-                # unchanged, so legacy paths are bit-identical.
-                vals = np.unwrap(np.radians(vals))
-                interp = np.interp(times, ts, vals)
-                vals = (np.degrees(interp) + 180.0) % 360.0 - 180.0
+                # cut mid-window), then wrap back into v360's range. One
+                # shared helper owns the sequence; see interp_angle_deg.
+                vals = interp_angle_deg(times, ts, vals)
             else:
                 vals = np.interp(times, ts, vals)
             lines.extend(f"{tt:.6f} v360@view {name} {vv:.4f};" for tt, vv in zip(times, vals))
@@ -416,8 +474,11 @@ def render(
         f"sendcmd=f='{command_file}',"
         f"v360@view=input={proj}:output=flat:id_fov={fov}"
         f":h_fov={first.fov}:v_fov={first.fov * height / width}"
+        # Static options are validated like commands: v360 refuses angles
+        # beyond +-180 outright, so the seam-crossing first point is
+        # wrapped here exactly as the command file wraps it.
         f":w={width}:h={height}"
-        f":yaw={first.yaw}:pitch={first.pitch}:roll={first.roll}"
+        f":yaw={wrap_deg(first.yaw)}:pitch={wrap_deg(first.pitch)}:roll={wrap_deg(first.roll)}"
         # reset_rot=1 is REQUIRED here, not cosmetic. v360's process_command()
         # zeroes yaw, pitch and roll on EVERY sendcmd command unless reset_rot is
         # set, so with the default a command file that changes more than one angle
@@ -442,7 +503,7 @@ def render(
         stage_one = (
             f"v360=input={proj}:output=equirect:id_fov={fov}"
             f":w={sphere_size[0]}:h={sphere_size[1]}"
-            f":yaw={-tyaw}:interp=lanczos"
+            f":yaw={wrap_deg(-tyaw)}:interp=lanczos"
         )
         stage_two = reproject.replace(f"input={proj}:", "input=equirect:")
         stage_two = stage_two.replace(f"id_fov={fov}", "id_fov=0")
