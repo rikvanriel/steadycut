@@ -70,8 +70,11 @@ EST_BYTES_PER_SEGMENT = 128 * 1024 ** 2
 _FPS_CACHE: dict[str, Fraction] = {}
 _NFRAMES_CACHE: dict[str, int] = {}
 
+_FFPROBE_TIMEOUT = 30.0
 
-def fps_ratio(source: str | Path) -> Fraction:
+
+def fps_ratio(source: str | Path,
+              timeout: float = _FFPROBE_TIMEOUT) -> Fraction:
     """Source frame rate as an exact rational, cached.
 
     Probed (r_frame_rate, avg_frame_rate fallback), never assumed:
@@ -81,11 +84,17 @@ def fps_ratio(source: str | Path) -> Fraction:
     """
     key = str(source)
     if key not in _FPS_CACHE:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=r_frame_rate,avg_frame_rate",
-             "-of", "default=noprint_wrappers=1", str(source)],
-            capture_output=True, text=True, check=True).stdout
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=r_frame_rate,avg_frame_rate",
+                 "-of", "default=noprint_wrappers=1", str(source)],
+                capture_output=True, text=True, check=True,
+                timeout=timeout).stdout
+        except subprocess.TimeoutExpired:
+            raise ValueError(
+                f"cannot probe {source}: ffprobe timed out after {timeout:g}s"
+            ) from None
         ratio = Fraction(0, 1)
         for line in out.splitlines():
             name, _, value = line.partition("=")
@@ -104,7 +113,8 @@ def fps_ratio(source: str | Path) -> Fraction:
     return _FPS_CACHE[key]
 
 
-def total_source_frames(source: str | Path, fps: Fraction) -> int:
+def total_source_frames(source: str | Path, fps: Fraction,
+                        timeout: float = _FFPROBE_TIMEOUT) -> int:
     """Source length in frames: nb_frames when the container has it.
 
     Falls back to round(duration * fps) for containers without a frame
@@ -113,11 +123,17 @@ def total_source_frames(source: str | Path, fps: Fraction) -> int:
     """
     key = str(source)
     if key not in _NFRAMES_CACHE:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=nb_frames,duration",
-             "-of", "default=noprint_wrappers=1", str(source)],
-            capture_output=True, text=True, check=True).stdout
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=nb_frames,duration",
+                 "-of", "default=noprint_wrappers=1", str(source)],
+                capture_output=True, text=True, check=True,
+                timeout=timeout).stdout
+        except subprocess.TimeoutExpired:
+            raise ValueError(
+                f"cannot probe {source}: ffprobe timed out after {timeout:g}s"
+            ) from None
         fields = dict(line.partition("=")[::2]
                       for line in out.splitlines() if "=" in line)
         try:
@@ -368,7 +384,8 @@ class SegmentStore:
                 break
         return evicted
 
-    def adopt_or_delete_legacy(self, legacy_mp4: str | Path) -> str:
+    def adopt_or_delete_legacy(self, legacy_mp4: str | Path,
+                               timeout: float = _FFPROBE_TIMEOUT) -> str:
         """Adopt the old single-file proxy as segment 0, or delete it.
 
         The old <fp>.mp4 layout is orphaned by <fp>/seg_<i>.mp4. It only
@@ -388,7 +405,8 @@ class SegmentStore:
                  "-show_entries", "stream=nb_frames,width,height,duration",
                  "-show_entries", "stream=codec_type",
                  "-of", "json", str(legacy)],
-                capture_output=True, text=True, check=True).stdout
+                capture_output=True, text=True, check=True,
+                timeout=timeout).stdout
             streams = json.loads(out).get("streams", [])
             video = [s for s in streams if s.get("codec_type") == "video"]
             audio = [s for s in streams if s.get("codec_type") == "audio"]
@@ -406,7 +424,8 @@ class SegmentStore:
                     os.replace(legacy, dst)
                     sidecar.write_text(json.dumps(self.expected(0), indent=1))
                     adopted = True
-        except (OSError, ValueError, subprocess.CalledProcessError):
+        except (OSError, ValueError, subprocess.CalledProcessError,
+                subprocess.TimeoutExpired):
             adopted = False
         if adopted:
             return "adopted"

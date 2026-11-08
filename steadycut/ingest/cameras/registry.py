@@ -252,7 +252,8 @@ def _probe_streams(path) -> dict:
         out = subprocess.run(
             ["ffprobe", "-v", "error", "-print_format", "json",
              "-show_format", "-show_streams", str(path)],
-            capture_output=True, text=True, check=True).stdout
+            capture_output=True, text=True, check=True,
+            timeout=30.0).stdout
         return json.loads(out)
     except Exception:
         return {}

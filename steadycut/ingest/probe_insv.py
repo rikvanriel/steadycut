@@ -60,23 +60,32 @@ class Probe:
         return self.is_dual_fisheye and not self.errors
 
 
-def _ffprobe(path: Path) -> dict:
+_FFPROBE_TIMEOUT = 30.0
+
+
+def _ffprobe(path: Path, timeout: float = _FFPROBE_TIMEOUT) -> dict:
     if shutil.which("ffprobe") is None:
         raise RuntimeError("ffprobe not found on PATH")
 
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v", "error",
-            "-print_format", "json",
-            "-show_streams",
-            "-show_format",
-            str(path),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-print_format", "json",
+                "-show_streams",
+                "-show_format",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"cannot probe {path}: ffprobe timed out after {timeout:g}s"
+        ) from None
     return json.loads(result.stdout)
 
 

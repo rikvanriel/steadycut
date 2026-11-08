@@ -32,8 +32,10 @@ FPS = 29.97
 
 _FPS_CACHE: dict = {}
 
+_FFPROBE_TIMEOUT = 30.0
 
-def source_fps(source) -> float:
+
+def source_fps(source, timeout: float = _FFPROBE_TIMEOUT) -> float:
     """Exact frame rate of the source, cached.
 
     Probed rather than assumed: 30000/1001 is not 29.97, and at these clip
@@ -47,7 +49,8 @@ def source_fps(source) -> float:
                 ["ffprobe", "-v", "error", "-select_streams", "v:0",
                  "-show_entries", "stream=r_frame_rate",
                  "-of", "default=noprint_wrappers=1", str(source)],
-                capture_output=True, text=True, check=True).stdout
+                capture_output=True, text=True, check=True,
+                timeout=timeout).stdout
             value = out.strip().split("=")[-1]
             num, _, den = value.partition("/")
             _FPS_CACHE[key] = float(num) / float(den) if den else float(num)
