@@ -254,6 +254,8 @@ def render(
     geometry=None,
     dry_run: bool = False,
     stitch=None,
+    frames: int | None = None,
+    include_audio: bool = True,
 ) -> list[str]:
     """Reproject `source` along `path` and encode to `output`.
 
@@ -275,6 +277,12 @@ def render(
 
     Returns the ffmpeg argument list, so a caller can inspect or re-run the
     exact command.  With dry_run set nothing is executed.
+
+    `frames` bounds the output to exactly that many video frames (segmented
+    proxies: the segment IS the frame window, so the bound is exact, not the
+    +5 slack the duration-derived cap uses). `include_audio` drops the audio
+    map (segmented proxies are video-only: AAC priming adds ~21 ms of
+    leading offset per segment, which would skew every boundary).
     """
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg not found on PATH")
@@ -298,8 +306,16 @@ def render(
         snapped = snap_to_frame(start, source)
         if snapped != start:
             delta = start - snapped
-            path = [replace(p, t=p.t + delta) for p in path]
-            start = snapped
+            if abs(delta) < 1e-9:
+                # Float dust, not a sub-frame phase (a frame is ~33 ms):
+                # the caller already targeted this frame, so there is
+                # nothing to re-reference the path to. Shifting by dust
+                # would push a t=0 control point below zero and trip the
+                # at-or-after-t=0 gate below.
+                start = snapped
+            else:
+                path = [replace(p, t=p.t + delta) for p in path]
+                start = snapped
 
     # The static filter options need a point inside the clip, since a path
     # built from telemetry can begin slightly before the first frame.
@@ -492,8 +508,11 @@ def render(
         args += [
             "-filter_complex", filtergraph,
             "-map", "[v]",
-            "-map", f"{audio_idx}:a:0?" if use_blend else "0:a:0?",
         ]
+        if include_audio:
+            args += ["-map", f"{audio_idx}:a:0?" if use_blend else "0:a:0?"]
+        else:
+            args += ["-an"]
     else:
         filtergraph = reproject
         args = ["ffmpeg", "-hide_banner", "-y"]
@@ -505,12 +524,16 @@ def render(
         if duration is not None:
             args += ["-t", format_ts(duration)]
         args += ["-i", str(source), "-vf", filtergraph]
+        if not include_audio:
+            args += ["-an"]
 
     # Output frame cap: graphs with infinite loop inputs (ramp mask) and
     # repeat-on-EOF joins (maskedmerge) do not terminate on their own -- a 3 s
     # window burned 200+ CPU-min with zero bytes out. Bound the output by
     # frame count whenever the duration is known (same lesson as the bake).
-    if duration is not None:
+    if frames is not None:
+        args += ["-frames:v", str(frames)]
+    elif duration is not None:
         import math as _math
         try:
             _nframes = _math.ceil(duration * (source_fps(str(source)) or 29.97)) + 5
@@ -523,11 +546,16 @@ def render(
         "-preset", preset,
         "-crf", str(crf),
         "-pix_fmt", "yuv420p",
+    ]
+    if include_audio:
+        args += [
         # Stereo is captured in the wearer's frame while the virtual camera
         # turns independently, so the audio is copied rather than rotated to
         # match a heading it never had.
         "-c:a", "aac",
         "-b:a", "192k",
+        ]
+    args += [
         str(output),
     ]
 

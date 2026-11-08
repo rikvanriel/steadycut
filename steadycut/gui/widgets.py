@@ -73,7 +73,7 @@ class Preview(QWidget):
 
 
 class FilmStrip(QWidget):
-    """Proxy-span thumbnails with draggable in/out handles + playhead."""
+    """Full-timeline thumbnails with draggable in/out handles + playhead."""
 
     seeked = Signal(float)
     ranged = Signal(float, float)  # in_t, out_t

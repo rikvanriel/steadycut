@@ -224,19 +224,25 @@ def proxy_manifest(source, camera: dict | None, stitch: str,
 
 
 def build_proxy(source, start: float, dur: float, dst,
-                pitch: float, size=(960, 720)) -> Path:
+                pitch: float, size=(960, 720), nframes: int | None = None,
+                video_only: bool = False) -> Path:
     """Render a frozen constant-framing proxy for scrubbing.
 
     One fixed pitch for the whole window (gravity fallback or the stored
     policy pitch -- never a followed path): the proxy shows WHERE the clip
     is, not HOW the framing moves. Linear cold-open: no gyro, no 2D, no
     certificate -- first frame out in seconds, not minutes.
+
+    `nframes` bounds the output to exactly that many video frames (segmented
+    proxies: the segment IS the frame window). `video_only` drops the audio
+    track (segmented proxies: AAC priming offsets every boundary by ~21 ms).
     """
     from steadycut.core.pipeline import ClipSpec, render_constant
     spec = ClipSpec(source=source, start=start, duration=dur,
                     framing_pitch=pitch, fov=120.0, size=size,
                     profile=None, stitch=None)
-    return render_constant(spec, dst, preset="ultrafast")
+    return render_constant(spec, dst, preset="ultrafast", frames=nframes,
+                           include_audio=not video_only)
 
 
 class OutputLocked(ValueError):

@@ -18,9 +18,8 @@ from steadycut.gui.app import Main  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def app():
-    application = QApplication([])
-    yield application
+def app(qapp):
+    return qapp
 
 
 def test_window_builds_with_no_media(app):

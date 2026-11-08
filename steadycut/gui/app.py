@@ -23,11 +23,11 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
                                QSplitter, QVBoxLayout, QWidget)
 
 from steadycut.gui import backend as B
+from steadycut.gui import proxy as PX
 from steadycut.gui import runner as R
 from steadycut.gui.widgets import FilmStrip, GyroStrip, Preview
 
 PRESETS = ("medium", "fast", "ultrafast", "slow")
-THUMB_COUNT = 16
 
 
 def qimage_from_bgr(frame: np.ndarray, width: int = 0) -> QImage:
@@ -42,19 +42,24 @@ def qimage_from_bgr(frame: np.ndarray, width: int = 0) -> QImage:
 
 
 class LoaderThread(QThread):
-    """Open-file background work: probe, identify, proxy, gyro, thumbs."""
+    """Open-file background work: probe, identify, store, gyro, thumbs.
+
+    The proxy is segmented (one 30 s video-only file per segment in the
+    per-source cache dir), so open only resolves the store (pitch, grid,
+    legacy adopt/delete) and streams full-file gyro; segment builds and
+    thumbnail grabs run in the proxy package's own workers, polled by
+    the main window.
+    """
 
     note = Signal(str)
-    proxy_ready = Signal(str, dict, float, dict)
+    store_ready = Signal(object, dict, float, dict, float)
     telemetry_ready = Signal(object, object)
-    thumbs_ready = Signal(object)
     failed = Signal(str, str)
     proxy_only = False
 
     def __init__(self, source: str, camera_hint: str | None,
                  stitch: str, camera: dict | None = None,
-                 profile=None, span: tuple | None = None,
-                 pitch: tuple | None = None,
+                 profile=None, total: float = 0.0,
                  proxy_only: bool = False, parent=None):
         super().__init__(parent)
         self.source = source
@@ -62,8 +67,7 @@ class LoaderThread(QThread):
         self.stitch = stitch
         self.camera = camera
         self.profile = profile
-        self._span_attr = span
-        self._pitch_attr = pitch
+        self._total_attr = total
         self._proxy_only = proxy_only
 
     def run(self):
@@ -74,12 +78,9 @@ class LoaderThread(QThread):
                              "is this a camera-original file?")
 
     def _run(self):
-        from steadycut.job import build_proxy
-
         if not self._proxy_only:
             self.note.emit("probing media …")
             total = B.media_total(self.source)
-            p0, pdur = B.proxy_span(total)
             self.note.emit("identifying camera …")
             ident = B.identify_camera(self.source, self.camera_hint)
             if ident["status"] != "ok":
@@ -93,49 +94,34 @@ class LoaderThread(QThread):
                                                 self.stitch)
             self._camera = camera
             self._ident = ident
+            self._profile = ident.get("profile")
             self._total = total
-            self._span = (p0, pdur)
         else:
-            assert self._span_attr is not None, "proxy rebuild needs a span"
-            p0, pdur = self._span_attr
-            camera = self.camera
+            assert self._camera is not None, "proxy rebuild needs a camera"
+            camera = self._camera
             manifest = B.current_proxy_manifest(self.source, camera,
                                                 self.stitch)
-        video, meta = B.proxy_paths(manifest["fingerprint"])
-        if not (video.exists() and B.proxy_is_fresh(meta, self.source,
-                                                   camera, self.stitch)):
-            self.note.emit("building proxy (ultrafast, one frozen pitch) …")
-            if not self._proxy_only:
-                pitch, info = B.frozen_pitch(self.source, p0,
-                                             self._ident.get("profile"))
-                self._profile = self._ident.get("profile")
-            elif self._pitch_attr is not None:
-                pitch, info = self._pitch_attr
-            else:
-                pitch, info = B.frozen_pitch(self.source, p0, self.profile)
-            video.parent.mkdir(parents=True, exist_ok=True)
-            build_proxy(self.source, p0, pdur, video, pitch,
-                        size=B.PROXY_SIZE)
-            meta.write_text(json.dumps(manifest, indent=1))
-            self._pitch, self._pitch_info = pitch, info
-        elif not hasattr(self, "_pitch"):
-            from steadycut.core.profiles import load_for
-
-            stored = load_for(self.source)
-            self._pitch = (stored.pitch if stored is not None
-                           and stored.pitch is not None else -12.0)
-            self._pitch_info = {"layer": "stored-or-constant",
-                                "usable": stored is not None}
-        self.proxy_ready.emit(str(video), manifest, float(self._pitch),
-                              dict(self._pitch_info))
+            profile = self.profile
+            total = self._total_attr
+        self.note.emit("resolving proxy store …")
+        root = B.proxy_cache_dir() / manifest["fingerprint"]
+        pitch, info = PX.load_or_resolve_pitch(root, self.source, profile)
+        store = PX.open_store(root, self.source, pitch)
+        self._store = store
+        self._pitch, self._pitch_info = pitch, info
+        legacy = B.proxy_paths(manifest["fingerprint"])[0]
+        adopted = store.adopt_or_delete_legacy(legacy)
+        if adopted == "adopted":
+            self.note.emit("adopted legacy proxy as segment 0 …")
+        self.store_ready.emit(store, manifest, float(pitch),
+                              dict(info), float(total))
         if self._proxy_only:
-            self._emit_thumbs(video, p0, pdur)
             return
         self.note.emit("loading gyro …")
-        self._emit_gyro(p0, pdur)
-        self._emit_thumbs(video, p0, pdur)
+        self._emit_gyro()
+        self.note.emit("proxy store ready …")
 
-    def _emit_gyro(self, p0: float, pdur: float):
+    def _emit_gyro(self):
         from steadycut.ingest.telemetry import read_telemetry
 
         profile = getattr(self, "_profile", None) or self.profile
@@ -143,27 +129,8 @@ class LoaderThread(QThread):
         t = np.asarray(imu.time_s, dtype=float)
         mag = np.linalg.norm(np.asarray(imu.gyro, dtype=float),
                              axis=1)  # telemetry gyro is already deg/s
-        mask = (t >= p0) & (t < p0 + pdur)
-        if not mask.any():
-            return
-        t, mag = t[mask], mag[mask]
         step = max(1, len(t) // 1200)
         self.telemetry_ready.emit(t[::step].tolist(), mag[::step].tolist())
-
-    def _emit_thumbs(self, video: Path, p0: float, pdur: float):
-        cap = cv2.VideoCapture(str(video))
-        thumbs = []
-        try:
-            for i in range(THUMB_COUNT):
-                t = p0 + (i + 0.5) / THUMB_COUNT * pdur
-                cap.set(cv2.CAP_PROP_POS_MSEC, (t - p0) * 1000.0)
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                thumbs.append((t, qimage_from_bgr(frame, width=144)))
-        finally:
-            cap.release()
-        self.thumbs_ready.emit(thumbs)
 
 
 class Main(QMainWindow):
@@ -178,13 +145,17 @@ class Main(QMainWindow):
         self.state = B.GuiState()
         self.job_state: B.GuiState | None = None
         self.total = 0.0
-        self.proxy_span = (0.0, 60.0)
-        self.proxy_path: str | None = None
+        self.store: PX.SegmentStore | None = None
+        self.builder: PX.SegmentBuilder | None = None
+        self.thumbs: PX.ThumbStrip | None = None
+        self.player: PX.SegmentPlayer | None = None
+        self.cursor = PX.PlaybackCursor()
+        self.thumb_qimages: dict[float, object] = {}
+        self.thumbs_saved = 0
         self.proxy_pitch = -12.0
         self.camera: dict | None = None
         self.profile = None
         self.ident_label = "no media"
-        self.cap: cv2.VideoCapture | None = None
         self.fps = 29.97
         self.play_t = 0.0
         self.playing = False
@@ -203,6 +174,9 @@ class Main(QMainWindow):
         self._poll = QTimer(self)
         self._poll.setInterval(120)
         self._poll.timeout.connect(self._poll_job)
+        self._proxypoll = QTimer(self)
+        self._proxypoll.setInterval(200)
+        self._proxypoll.timeout.connect(self._poll_proxy)
 
     # -- layout ---------------------------------------------------------
     def _build(self):
@@ -345,16 +319,18 @@ class Main(QMainWindow):
             self._status("loader busy — wait for the proxy, then retry")
             return
         self._stop_playback()
-        self._close_cap()
+        self._close_proxy_workers()
         self.state = B.GuiState(source=path)
         self.job_state = None
-        self.rendered_fp = None
+        self.rendered_fp: str | None = None
         self.out_dirty = out is not None
         if out:
             self.state.out = out
-        self.proxy_path = None
+        self.store = None
         self.camera = None
         self.profile = None
+        self.thumb_qimages = {}
+        self.thumbs_saved = 0
         self.refusal.setVisible(False)
         self.logview.clear()
         self.prev.show_frame(None)
@@ -366,9 +342,8 @@ class Main(QMainWindow):
         stitch = self.stitch.currentText()
         self.loader = LoaderThread(path, hint, stitch)
         self.loader.note.connect(self._status)
-        self.loader.proxy_ready.connect(self._on_proxy)
+        self.loader.store_ready.connect(self._on_store_ready)
         self.loader.telemetry_ready.connect(self._on_gyro)
-        self.loader.thumbs_ready.connect(self._on_thumbs)
         self.loader.failed.connect(self._on_open_failed)
         self.loader.start()
 
@@ -378,61 +353,125 @@ class Main(QMainWindow):
         self.prev.overlay = "no media"
         self.prev.update()
 
-    def _on_proxy(self, video: str, manifest: dict, pitch: float,
-                  info: dict):
-        self.proxy_path = video
-        self.proxy_pitch = pitch
+    def _close_proxy_workers(self):
+        """Stop fill/thumbs/player: group-kill builds, join, release caps."""
+        if self.builder is not None:
+            self.builder.stop(cancel_in_flight=True)
+            self.builder = None
+        if self.thumbs is not None:
+            self.thumbs.stop()
+            self.thumbs = None
+        if self.player is not None:
+            self.player.close()
+            self.player = None
+        if hasattr(self, "_proxypoll"):
+            self._proxypoll.stop()
+
+    def _on_store_ready(self, store, manifest: dict, pitch: float,
+                        info: dict, total: float):
         loader = self.loader
+        self.store = store
+        self.proxy_pitch = pitch
+        self.total = total
+        self.fps = float(store.fps)
         if loader is not None and not loader._proxy_only:
             self.camera = loader.camera
             self.profile = getattr(loader, "_profile", None)
-            self.total = loader._total
-            self.proxy_span = loader._span
             ident = loader._ident
             self.ident_label = (
                 f"{ident.get('model')} via {ident.get('via')}")
-            p0, pdur = self.proxy_span
-            in_t = min(p0 + 10.0, p0 + pdur - 1.0)
-            out_t = min(in_t + 15.0, p0 + pdur)
-            self.strip.set_span(p0, p0 + pdur)
+            in_t = min(10.0, max(0.0, total - 1.0))
+            out_t = min(in_t + 15.0, total)
+            self.strip.set_span(0.0, total)
             self._set_window(in_t, out_t, in_t)
             self.e_destination.setText(
                 self.state.out or B.default_out(
                     self.state.source, in_t, self.state.tall))
+        elif getattr(self, "_pending_window", None) is not None:
+            in_t, dur, play_t = self._pending_window
+            self._pending_window = None
+            self.strip.set_span(0.0, total)
+            self._set_window(in_t, in_t + dur,
+                             min(max(play_t, in_t), in_t + dur))
         usable = info.get("usable", True)
         self.prev.proxy_note = ("proxy · 720p · ready" if usable
                                 else "proxy · 720p · pitch fallback")
-        self._open_cap()
+        self.player = PX.SegmentPlayer(store)
+        self.builder = PX.SegmentBuilder(store)
+        self.builder.request_window(self.state.start,
+                                    self.state.start + self.state.dur)
+        self.builder.request_playhead(self.play_t)
+        self.builder.start()
+        self.thumbs = PX.ThumbStrip(
+            self.state.source, PX.thumb_times(total), pitch,
+            sheet=store.root / PX.THUMB_SHEET,
+            index=store.root / PX.THUMB_INDEX)
+        self.thumbs.start()
+        self._proxypoll.start()
         self._show_at(self.play_t)
         self._refresh_meta()
-        self._status("proxy ready")
+        self._status("proxy store ready — building playhead segment …")
+
+    def _poll_proxy(self):
+        """Drain segment/thumb worker events into the strip and preview."""
+        if self.builder is not None:
+            if self.player is not None:
+                self.builder.note_open_segments(
+                    self.player.open_segments())
+            for kind, i, ok, detail in self.builder.drain():
+                if kind != "segment":
+                    continue
+                if not ok:
+                    self._status(f"segment {i} failed ({detail})")
+                    continue
+                if self.store is not None and i == PX.segment_at_time(
+                        self.play_t, self.store.fps,
+                        self.store.frames_per_segment):
+                    self._show_at(self.play_t)
+        if self.thumbs is not None:
+            fresh = 0
+            for event in self.thumbs.drain():
+                if event[0] != "thumb":
+                    continue
+                _, t, jpg = event
+                img = QImage.fromData(jpg, "JPG")
+                if img.isNull():
+                    continue
+                self.thumb_qimages[float(t)] = img
+                fresh += 1
+            if fresh:
+                self.strip.thumbs = sorted(
+                    ((t, img) for t, img in self.thumb_qimages.items()),
+                    key=lambda kv: kv[0])
+                self.strip.update()
+                if len(self.thumb_qimages) - self.thumbs_saved >= 10:
+                    self.thumbs.save_sheet()
+                    self.thumbs_saved = len(self.thumb_qimages)
+        if self.builder is None and self.thumbs is None:
+            self._proxypoll.stop()
 
     def _on_gyro(self, times, values):
         self.gyro.set_series(times, values)
         self.gyro.set_window(self.play_t, self.state.start,
                              self.state.start + self.state.dur)
 
-    def _on_thumbs(self, thumbs):
-        self.strip.thumbs = list(thumbs)
-        self.strip.update()
-
     def _on_stitch(self, text: str):
         self._panel_to_state()
         self._refresh_meta()
-        if (self.proxy_path is None or self.camera is None
+        if (self.store is None or self.camera is None
                 or self.loader is not None and self.loader.isRunning()):
             return
-        self._status("stitch changed — rebuilding proxy …")
+        self._status("stitch changed — reopening proxy store …")
+        play_t, in_t, dur = self.play_t, self.state.start, self.state.dur
+        self._close_proxy_workers()
         self.loader = LoaderThread(
             self.state.source, None, text, camera=self.camera,
-            profile=self.profile, span=self.proxy_span,
-            pitch=(self.proxy_pitch, {"layer": "kept", "usable": True}),
-            proxy_only=True)
+            profile=self.profile, total=self.total, proxy_only=True)
         self.loader.note.connect(self._status)
-        self.loader.proxy_ready.connect(self._on_proxy)
-        self.loader.thumbs_ready.connect(self._on_thumbs)
+        self.loader.store_ready.connect(self._on_store_ready)
         self.loader.failed.connect(self._on_open_failed)
         self.loader.start()
+        self._pending_window = (in_t, dur, play_t)
 
     def _status(self, text: str):
         self.status_lbl.setText(text)
@@ -502,10 +541,19 @@ class Main(QMainWindow):
             self._set_window(self.state.start,
                              self.state.start + self.state.dur, self.play_t)
             return
-        p0, pdur = self.proxy_span
-        in_t = min(max(in_t, p0), p0 + pdur - 0.5)
-        out_t = min(max(out_t, in_t + 0.5), p0 + pdur)
+        end = self.total if self.total > 0 else None
+        if end is None:
+            # No media open: keep the typed window (ordering only); bounds
+            # apply once the probe reports the real duration.
+            in_t = max(0.0, in_t)
+            out_t = max(out_t, in_t + 0.5)
+        else:
+            end = max(0.5, end)
+            in_t = min(max(in_t, 0.0), end - 0.5)
+            out_t = min(max(out_t, in_t + 0.5), end)
         self._set_window(in_t, out_t, min(max(self.play_t, in_t), out_t))
+        if self.builder is not None:
+            self.builder.request_window(in_t, out_t)
         self._show_at(self.play_t)
 
     def _refresh_meta(self):
@@ -567,44 +615,53 @@ class Main(QMainWindow):
         self._drag_anchor = None
         super().mouseReleaseEvent(ev)
 
-    # -- preview / transport -------------------------------------------
-    def _open_cap(self):
-        self._close_cap()
-        if not self.proxy_path:
-            return
-        self.cap = cv2.VideoCapture(self.proxy_path)
-        fps = self.cap.get(cv2.CAP_PROP_FPS)
-        self.fps = float(fps) if fps and fps > 1 else 29.97
-
-    def _close_cap(self):
-        if self.cap is not None:
-            self.cap.release()
-            self.cap = None
-
+    # -- preview / transport (segmented) -------------------------------
     def _show_at(self, t: float):
-        if self.cap is None or self.proxy_path is None:
+        """Show the proxy frame for media time t (POS_FRAMES, never MSEC).
+
+        Unbuilt gaps hold the last frame with a "building …" tag instead
+        of hanging the UI; demand for the missing segment is already
+        queued by _on_seek.
+        """
+        if self.player is None or self.store is None:
             return
-        p0, _ = self.proxy_span
-        self.cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, (t - p0)) * 1000.0)
-        ok, frame = self.cap.read()
-        if ok:
+        frame, status = self.player.frame_at(t)
+        if frame is None:
+            self.prev.overlay = (f"{Path(self.state.source).name} · "
+                                 f"{B.fmt_time(t)} · building …")
+            self.prev.show_frame(None)
+            return
+        if status == "building":
+            self.prev.overlay = (f"{Path(self.state.source).name} · "
+                                 f"{B.fmt_time(t)} · building …")
+        else:
             self.prev.overlay = (f"{Path(self.state.source).name} · "
                                  f"{B.fmt_time(t)}")
-            self.prev.show_frame(qimage_from_bgr(frame))
+        self.prev.show_frame(qimage_from_bgr(frame))
 
     def _on_seek(self, t: float):
         self.play_t = t
         self._set_window(self.state.start,
                          self.state.start + self.state.dur, t)
+        if self.store is not None and not self.store.is_present(
+                PX.segment_at_time(t, self.store.fps,
+                                   self.store.frames_per_segment)):
+            self.prev.overlay = (f"{Path(self.state.source).name} · "
+                                 f"{B.fmt_time(t)} · building …")
+            self.prev.update()
+            if self.builder is not None:
+                self.builder.request_playhead(t)
         self._show_at(t)
 
     def _on_range(self, in_t: float, out_t: float):
         self._set_window(in_t, out_t,
                          min(max(self.play_t, in_t), out_t))
+        if self.builder is not None:
+            self.builder.request_window(in_t, out_t)
         self._show_at(self.play_t)
 
     def toggle(self):
-        if self.cap is None:
+        if self.player is None:
             return
         self.playing = not self.playing
         self.play.setText("⏸" if self.playing else "▶")
@@ -619,29 +676,27 @@ class Main(QMainWindow):
         self._tick.stop()
 
     def _on_tick(self):
-        if not self.playing or self.cap is None:
+        if not self.playing or self.player is None or self.store is None:
             return
-        p0, pdur = self.proxy_span
-        target = self.play_t + self._tick.interval() / 1000.0
         in_t = self.state.start
         out_t = self.state.start + self.state.dur
-        if target >= out_t or target >= p0 + pdur:
-            self.cap.set(cv2.CAP_PROP_POS_MSEC, (in_t - p0) * 1000.0)
-            ok, frame = self.cap.read()
-            self.play_t = in_t if ok else p0
-            if ok:
-                self.prev.show_frame(qimage_from_bgr(frame))
-        else:
-            for _ in range(12):
-                pos = (self.cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0 + p0)
-                if pos >= target - 1e-3:
-                    break
-                ok, frame = self.cap.read()
-                if not ok:
-                    break
-                self.play_t = pos
-                self.prev.show_frame(qimage_from_bgr(frame))
+        self.cursor.play_t, self.cursor.in_t, self.cursor.out_t = \
+            self.play_t, in_t, out_t
+        frame, status = self.player.frame_at(
+            min(self.play_t + self._tick.interval() / 1000.0, out_t))
+        if status != "ok":
+            # Unbuilt gap inside [in, out]: hold the last frame, never
+            # wrap to p0 and never hang the UI. The demand for this
+            # segment is already queued; playback resumes when it lands.
+            self.prev.overlay = (f"{Path(self.state.source).name} · "
+                                 f"{B.fmt_time(self.play_t)} · building …")
+            self.prev.update()
+            return
+        play_t, _ = self.cursor.advance(
+            self._tick.interval() / 1000.0, status)
+        self.play_t = play_t
         self._set_window(in_t, out_t, self.play_t)
+        self._show_at(self.play_t)
 
     def keyPressEvent(self, ev):
         from PySide6.QtWidgets import QLineEdit as _LE
@@ -661,10 +716,9 @@ class Main(QMainWindow):
         elif ev.key() == Qt.Key.Key_Space:
             self.toggle()
         elif ev.key() == Qt.Key.Key_Left:
-            self._on_seek(max(self.proxy_span[0],
-                              self.play_t - step))
+            self._on_seek(max(0.0, self.play_t - step))
         elif ev.key() == Qt.Key.Key_Right:
-            self._on_seek(min(self.proxy_span[0] + self.proxy_span[1],
+            self._on_seek(min(self.total or self.play_t,
                               self.play_t + step))
         else:
             super().keyPressEvent(ev)
@@ -696,6 +750,10 @@ class Main(QMainWindow):
         self.cancel_btn.setEnabled(True)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
+        if self.builder is not None:
+            # Pause fill during renders: stop starting new segments, let
+            # the in-flight one finish (bounded by segment size).
+            self.builder.set_rendering(True)
         self._status("rendering …")
         self._poll.start()
 
@@ -758,6 +816,8 @@ class Main(QMainWindow):
         self.progress.setVisible(False)
         self.render_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
+        if self.builder is not None:
+            self.builder.set_rendering(False)
 
     def _refresh_cert_sync(self, cert_path):
         try:
@@ -811,7 +871,7 @@ class Main(QMainWindow):
         self.preset.setCurrentText(self.state.preset)
         self.no_2d.setChecked(self.state.no_2d)
         self.e_destination.setText(self.state.out)
-        if src and Path(src).exists() and self.proxy_path is None:
+        if src and Path(src).exists() and self.store is None:
             self.open_media(src)
         else:
             self._set_window(self.state.start,
