@@ -375,10 +375,14 @@ def bake_lens_tracks(source: str, spec: StitchSpec, gain: tuple,
     args = ["ffmpeg", "-hide_banner", "-v", "error", "-y"]
     # -ss/-t are INPUT options: they must sit immediately before the source
     # they bound, or ffmpeg applies -t to the still-image input instead.
+    # The seek is snapped to the source frame grid and formatted at full
+    # precision: f"{x:g}" keeps 6 significant digits, so past ~1000 s it
+    # rounds up past the snapped frame and input seek drops that frame.
+    from steadycut.render.reframe import format_ts, snap_to_frame
     if start is not None:
-        args += ["-ss", f"{start:g}"]
+        args += ["-ss", format_ts(snap_to_frame(start, source))]
     if duration is not None:
-        args += ["-t", f"{duration:g}"]
+        args += ["-t", format_ts(duration)]
     args += ["-i", str(source)]
     args += ["-framerate", fps, "-loop", "1", "-i", str(dbA),
              "-framerate", fps, "-loop", "1", "-i", str(dbB)]

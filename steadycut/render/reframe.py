@@ -62,6 +62,18 @@ def snap_to_frame(t: float, source) -> float:
     return math.floor(t * fps + 1e-9) / fps
 
 
+def format_ts(t: float) -> str:
+    """Format a seek/duration timestamp for ffmpeg -ss/-t without loss.
+
+    ``f"{x:g}"`` keeps 6 significant digits, so past ~1000 s it rounds to
+    whole seconds -- usually UP, past the snapped frame, and input seek then
+    drops that frame (e.g. snap_to_frame(1500) = 1499.9985 emitted as
+    "-ss 1500"). repr() is the shortest string that round-trips the double
+    exactly, so the emitted seek still lands on the snapped frame.
+    """
+    return repr(float(t))
+
+
 _SIZE_CACHE: dict = {}
 
 
@@ -444,9 +456,9 @@ def render(
         # tracks are already windowed (seeking them again seeks past EOF and
         # starves the graph); only the audio source takes -ss/-t (blend_seek).
         if start is not None and not use_blend:
-            args += ["-ss", f"{snap_to_frame(start, source):g}"]
+            args += ["-ss", format_ts(snap_to_frame(start, source))]
         if duration is not None and not use_blend:
-            args += ["-t", f"{duration:g}"]
+            args += ["-t", format_ts(duration)]
         if use_blend:
             # Baked lens tracks are ordinary video inputs [0:v]/[1:v]; the
             # mask is a looped still [2:v] pinned to the video rate (at the
@@ -457,9 +469,9 @@ def render(
             # never finishes.
             blend_seek = []
             if start is not None:
-                blend_seek += ["-ss", f"{snap_to_frame(start, source):g}"]
+                blend_seek += ["-ss", format_ts(snap_to_frame(start, source))]
             if duration is not None:
-                blend_seek += ["-t", f"{duration:g}"]
+                blend_seek += ["-t", format_ts(duration)]
             args += ["-i", str(lens_a), "-i", str(lens_b),
                      "-loop", "1", "-framerate",
                      f"{source_fps(str(source)):g}",
@@ -489,9 +501,9 @@ def render(
         # tracks are already windowed (seeking them again seeks past EOF and
         # starves the graph); only the audio source takes -ss/-t (blend_seek).
         if start is not None and not use_blend:
-            args += ["-ss", f"{start:g}"]
+            args += ["-ss", format_ts(snap_to_frame(start, source))]
         if duration is not None:
-            args += ["-t", f"{duration:g}"]
+            args += ["-t", format_ts(duration)]
         args += ["-i", str(source), "-vf", filtergraph]
 
     # Output frame cap: graphs with infinite loop inputs (ramp mask) and
