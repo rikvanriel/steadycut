@@ -48,7 +48,11 @@ gui = [
     # Clip-picker (steadycut.gui, entry point steadycut-gui). PySide6
     # lives only behind this extra: the CLI never imports Qt, so the
     # base install stays Qt-free (pinned by tests/test_gui.py).
-    "PySide6>=6.7",
+    # Pinned to the 6.9 line: 6.12.0 aborts mid thumb-fill
+    # (none_dealloc in repaint GC after sustained repaints, reproduced
+    # down to an empty widget + repaint loop), while 6.9.2 survives the
+    # same 5000-repaint storm plus the 26k-iteration full paint workload.
+    "PySide6>=6.9,<6.10",
 ]
 ml = [
     # Assist-mode labelling only (steadycut.framing.assist): three pinned
