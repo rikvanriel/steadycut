@@ -30,12 +30,12 @@ class Preview(QWidget):
     def mousePressEvent(self, ev):
         if (ev.button() == Qt.MouseButton.LeftButton
                 and self.frame is not None):
-            self._anchor = (ev.position().x, ev.position().y)
+            self._anchor = (ev.position().x(), ev.position().y())
 
     def mouseMoveEvent(self, ev):
         if self._anchor is not None:
             x0, y0 = self._anchor
-            self.dragged.emit(ev.position().x - x0, ev.position().y - y0)
+            self.dragged.emit(ev.position().x() - x0, ev.position().y() - y0)
 
     def mouseReleaseEvent(self, ev):
         self._anchor = None
@@ -141,7 +141,7 @@ class FilmStrip(QWidget):
             tick += step
 
     def mousePressEvent(self, ev):
-        x = ev.position().x
+        x = ev.position().x()
         if abs(x - self.t2x(self.in_t)) < 6:
             self._drag = "in"
         elif abs(x - self.t2x(self.out_t)) < 6:
@@ -154,7 +154,7 @@ class FilmStrip(QWidget):
     def mouseMoveEvent(self, ev):
         if not self._drag:
             return
-        v = self.x2t(ev.position().x)
+        v = self.x2t(ev.position().x())
         if self._drag == "in":
             self.ranged.emit(min(v, self.out_t - 0.5), self.out_t)
         else:

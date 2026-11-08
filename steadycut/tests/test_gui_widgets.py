@@ -97,3 +97,34 @@ def test_render_preflight_refuses_without_launching(app):
     assert w.refusal.isVisible()
     assert "not found" in w.refusal.text()
     w.close()
+
+
+def test_strip_click_seeks_and_handle_press_starts_drag(app):
+    # Regression: QPointF.x/y are methods in Qt6; the unparenthesised
+    # form passed a bound method into arithmetic and every click died
+    # in mousePressEvent. Offscreen tests never clicked, so it shipped.
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    from steadycut.gui.widgets import FilmStrip
+    strip = FilmStrip()
+    strip.resize(800, 90)
+    strip.show()
+    strip.set_span(0.0, 100.0)
+    strip.set_window(50.0, 10.0, 90.0)
+
+    got = []
+    strip.seeked.connect(lambda t: got.append(t))
+    QTest.mouseClick(strip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     QPoint(400, 30))
+    assert got and abs(got[-1] - 50.0) < 1.0  # mid-strip seeks mid-span
+
+    strip._drag = None
+    in_x = int(strip.t2x(10.0)) + 1
+    QTest.mousePress(strip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     QPoint(in_x, 30))
+    assert strip._drag == "in"
+    QTest.mouseRelease(strip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                       QPoint(in_x, 30))
+    assert strip._drag is None
+    strip.close()
