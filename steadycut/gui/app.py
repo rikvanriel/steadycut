@@ -883,11 +883,20 @@ class Main(QMainWindow):
 def main(argv=None) -> int:
     """Entry point: `steadycut-gui [source] [--out]`."""
     import argparse
+    import os
 
     ap = argparse.ArgumentParser(description="Steadycut clip-picker")
     ap.add_argument("source", nargs="?", default=None)
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
+    if (not os.environ.get("DISPLAY")
+            and not os.environ.get("WAYLAND_DISPLAY")
+            and os.environ.get("QT_QPA_PLATFORM", "") not in (
+                "offscreen", "minimal")):
+        print("REFUSE| no display server found\n"
+              "REFUSE| run with a display, or use the CLI "
+              "with --start/--dur instead")
+        return 2
     app = QApplication(sys.argv[:1])
     w = Main()
     w.show()

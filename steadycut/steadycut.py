@@ -113,6 +113,20 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def launch_gui() -> int:
+    """Open the clip-picker GUI. Imported lazily so the CLI never needs Qt.
+
+    The [gui] extra owns PySide6; without it this is a clean refusal
+    naming the install, not a traceback.
+    """
+    try:
+        from steadycut.gui.app import main as gui_main
+    except ImportError:
+        return refuse("the GUI needs the optional [gui] extra",
+                      "pip install steadycut[gui], or launch steadycut-gui")
+    return gui_main()
+
+
 def refuse(msg: str, hint: str) -> int:
     print(f"REFUSE| {msg}\nREFUSE| {hint}")
     return 2
@@ -204,6 +218,11 @@ def main(argv=None) -> int:
             apply_envelope(a, env, argv if argv is not None else sys.argv[1:])
         except ValueError as exc:
             return refuse(str(exc), "re-export the job from the GUI")
+    if (a.job is None and a.source is None and a.start is None
+            and a.dur is None and not a.check):
+        # Bare `steadycut`: no window, no job, nothing to validate --
+        # open the clip picker instead of refusing.
+        return launch_gui()
     if a.source is None or a.start is None or a.dur is None:
         return refuse("need source --start --dur (or a --job envelope "
                       "supplying them)",

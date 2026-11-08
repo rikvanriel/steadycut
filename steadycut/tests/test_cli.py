@@ -6,13 +6,47 @@ import pytest
 from steadycut.steadycut import build_parser, main, refuse
 
 
-def test_parser_leaves_window_to_main_or_job() -> None:
+def test_parser_leaves_window_to_main_or_job(monkeypatch) -> None:
     # source/start/dur are optional at parse level so a bare
     # `steadycut --job gui_job.json` parses; main() refuses when neither
     # argv nor the envelope supplies the full window.
     a = build_parser().parse_args([])
     assert (a.source, a.start, a.dur) == (None, None, None)
-    assert main([]) == 2
+    assert main(["f.insv", "--check"]) == 2  # --check needs a window
+
+
+def test_bare_invocation_opens_the_gui(monkeypatch) -> None:
+    import steadycut.steadycut as S
+    launched = []
+    monkeypatch.setattr(S, "launch_gui",
+                        lambda: launched.append(True) or 0)
+    assert main([]) == 0
+    assert launched == [True]
+
+
+def test_gui_main_refuses_headless_without_aborting(monkeypatch) -> None:
+    # With [gui] installed and no display, QApplication aborts (rc 134
+    # core dump). The entry point refuses cleanly instead.
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("QT_QPA_PLATFORM", "xcb")
+    from steadycut.gui import app as A
+    assert A.main([]) == 2
+
+
+def test_gui_without_extra_is_a_clean_refusal(monkeypatch, capsys) -> None:
+    import steadycut.steadycut as S
+    import builtins
+    real_import = builtins.__import__
+
+    def no_gui(name, *args, **kwargs):
+        if name == "steadycut.gui.app":
+            raise ImportError("No module named PySide6")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_gui)
+    assert S.launch_gui() == 2
+    assert "steadycut[gui]" in capsys.readouterr().out
     b = build_parser().parse_args(["f.insv", "--start", "10", "--dur", "5"])
     assert (b.source, b.start, b.dur) == ("f.insv", 10.0, 5.0)
     assert b.tall is False and b.no_2d is False
