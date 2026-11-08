@@ -39,6 +39,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-cov",  # GUI coverage gate in CI (every widget line runs).
     # The synthetic reframe harness composes and decomposes rotations with
     # scipy, which the shipped path deliberately does not: one Euler
     # decomposition is not worth making every install carry scipy.

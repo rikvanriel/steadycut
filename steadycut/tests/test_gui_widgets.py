@@ -128,3 +128,140 @@ def test_strip_click_seeks_and_handle_press_starts_drag(app):
                        QPoint(in_x, 30))
     assert strip._drag is None
     strip.close()
+
+
+def test_preview_paints_empty_and_framed(app):
+    # Media-free: both paintEvent branches (overlay text with no frame,
+    # framed image with the proxy tag) run offscreen without footage.
+    from PySide6.QtGui import QImage
+
+    from steadycut.gui.widgets import Preview
+    w = Preview()
+    w.resize(320, 240)
+    w.show()
+    app.processEvents()
+    img = QImage(64, 48, QImage.Format.Format_RGB32)
+    img.fill(0x112233)
+    w.proxy_note = "proxy 720p"
+    w.show_frame(img)
+    app.processEvents()
+    assert w.frame is not None
+    w.close()
+
+
+def test_preview_drag_emits_pixel_delta(app):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QImage
+    from PySide6.QtTest import QTest
+
+    from steadycut.gui.widgets import Preview
+    w = Preview()
+    img = QImage(64, 48, QImage.Format.Format_RGB32)
+    img.fill(1)
+    w.show_frame(img)
+    w.resize(320, 240)
+    w.show()
+    got = []
+    w.dragged.connect(lambda dx, dy: got.append((dx, dy)))
+    QTest.mousePress(w, Qt.MouseButton.LeftButton,
+                     Qt.KeyboardModifier.NoModifier, QPoint(160, 120))
+    QTest.mouseMove(w, QPoint(180, 110))
+    QTest.mouseRelease(w, Qt.MouseButton.LeftButton,
+                       Qt.KeyboardModifier.NoModifier, QPoint(180, 110))
+    assert got == [(20.0, -10.0)]
+    w.close()
+
+
+def test_filmstrip_paints_thumbs_and_drags_both_handles(app):
+    # Media-free: thumb paint branch, both handle drags (in/out ranged
+    # emits), and the empty-checker branch.
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QImage
+    from PySide6.QtTest import QTest
+
+    from steadycut.gui.widgets import FilmStrip
+
+    class _Pos:
+        def __init__(self, x):
+            self._x = x
+
+        def position(self):
+            outer = self
+
+            class _P:
+                def x(self):
+                    return outer._x
+
+                def y(self):
+                    return 30.0
+
+            return _P()
+
+    def _pos_event(x):
+        return _Pos(x)
+
+    s = FilmStrip()
+    s.resize(800, 90)
+    thumbs = []
+    for i in range(8):
+        img = QImage(80, 54, QImage.Format.Format_RGB32)
+        img.fill(i + 1)
+        thumbs.append((float(i * 10), img))
+    s.thumbs = thumbs
+    s.set_span(0.0, 80.0)
+    s.set_window(40.0, 10.0, 70.0)
+    s.show()
+    app.processEvents()
+    got = []
+    s.seeked.connect(lambda t: got.append(t))
+    # A move with no active drag is ignored (guard branch).
+    s._drag = None
+    s.mouseMoveEvent(_pos_event(200.0))
+    QTest.mouseClick(s, Qt.MouseButton.LeftButton,
+                     Qt.KeyboardModifier.NoModifier, QPoint(400, 30))
+    assert got  # empty-area click seeks
+    ranged = []
+    s.ranged.connect(lambda a, b: ranged.append((a, b)))
+    in_x = int(s.t2x(10.0)) + 1
+    QTest.mousePress(s, Qt.MouseButton.LeftButton,
+                     Qt.KeyboardModifier.NoModifier, QPoint(in_x, 30))
+    assert s._drag == "in"
+    QTest.mouseMove(s, QPoint(in_x + 40, 30))
+    QTest.mouseRelease(s, Qt.MouseButton.LeftButton,
+                       Qt.KeyboardModifier.NoModifier, QPoint(in_x + 40, 30))
+    assert ranged and s._drag is None
+    ranged.clear()
+    out_x = int(s.t2x(70.0)) - 1
+    QTest.mousePress(s, Qt.MouseButton.LeftButton,
+                     Qt.KeyboardModifier.NoModifier, QPoint(out_x, 30))
+    assert s._drag == "out"
+    QTest.mouseMove(s, QPoint(out_x - 40, 30))
+    QTest.mouseRelease(s, Qt.MouseButton.LeftButton,
+                       Qt.KeyboardModifier.NoModifier, QPoint(out_x - 40, 30))
+    assert ranged and s._drag is None
+    s.close()
+    # No thumbs: the fallback checker branch.
+    s2 = FilmStrip()
+    s2.resize(800, 90)
+    s2.set_span(0.0, 100.0)
+    s2.set_window(50.0, 10.0, 90.0)
+    s2.show()
+    app.processEvents()
+    s2.close()
+
+
+def test_gyrostrip_paints_empty_and_series(app):
+    # Media-free: the waiting-text branch and the polyline branch with
+    # a synthetic series, plus the setter paths.
+    from steadycut.gui.widgets import GyroStrip
+    g = GyroStrip()
+    g.resize(800, 48)
+    g.show()
+    app.processEvents()
+    times = [float(i) * 0.1 for i in range(200)]
+    values = [float(i % 10) - 5.0 for i in range(200)]
+    g.set_series(times, values)
+    g.set_window(5.0, 0.0, 20.0)
+    app.processEvents()
+    assert g.times and g.values
+    g.close()
