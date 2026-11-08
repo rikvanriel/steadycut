@@ -19,3 +19,4 @@ dist/
 
 # exploratory instruments kept out of the repo
 experiments/
+.coverage
