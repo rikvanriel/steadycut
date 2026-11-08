@@ -498,13 +498,18 @@ def test_segment_boundaries_index_exact(tmp_path):
     assert store.count() == 60
 
     def build(i):
+        src = store.source_for_segment(i)
+        want_kind = "lrv" if src.lower().endswith(".lrv") else "insv"
         if store.is_present(i):
-            return
+            cached = json.loads(store.seg_paths(i)[1].read_text())
+            if (cached.get("built_from") or {}).get("kind", "insv") \
+                    == want_kind:
+                return  # current planner source already built
         video, sidecar = store.seg_paths(i)
         tmp = video.with_name(f"{PX.TMP_PREFIX}{video.name}")
         r = subprocess.run(
             [sys.executable, "-m", "steadycut.gui.proxy_build",
-             "--source", REAL_INSV, "--frame-start", str(i * n),
+             "--source", src, "--frame-start", str(i * n),
              "--nframes", str(PX.segment_span(i, n, store.total_frames)[1]
                               - PX.segment_span(i, n, store.total_frames)[0]),
              "--fps", f"{fps.numerator}/{fps.denominator}",
@@ -531,7 +536,9 @@ def test_segment_boundaries_index_exact(tmp_path):
     refs = {}
     for name, f0 in (("r898", 898), ("r22474", 22474)):
         dst = tmp_path / f"{name}.mp4"
-        build_proxy(REAL_INSV, PX.frame_time(f0, fps),
+        ref_src = store.source_for_segment(
+            PX.segment_of_frame(f0, store.frames_per_segment))
+        build_proxy(ref_src, PX.frame_time(f0, fps),
                     float(Fraction(2, 1) / fps), str(dst), -12.0,
                     nframes=2, video_only=True)
         refs[name] = _read_all(dst)
@@ -560,3 +567,290 @@ def test_playback_cursor_loops_and_holds():
     cur.play_t = 20.0
     t, tag = cur.advance(0.066, "building")
     assert (t, tag) == (20.0, "building …")  # unbuilt gap holds the frame
+
+
+def test_resolve_lrv_keeps_chapter(tmp_path):
+    d = tmp_path / "sess"
+    d.mkdir()
+    for chap in ("010", "011", "012"):
+        (d / f"VID_20200101_000000_00_{chap}.insv").write_bytes(b"fake")
+    (d / "LRV_20200101_000000_01_010.lrv").write_bytes(b"fake")
+    (d / "LRV_20200101_000000_01_012.lrv").write_bytes(b"fake")
+    (d / "LRV_20200101_000000_01_999.lrv").write_bytes(b"decoy")
+    assert PX.resolve_lrv(d / "VID_20200101_000000_00_010.insv") == \
+        d / "LRV_20200101_000000_01_010.lrv"
+    # Missing sibling: the decoy chapter never fills in.
+    assert PX.resolve_lrv(d / "VID_20200101_000000_00_011.insv") is None
+    assert PX.resolve_lrv(d / "VID_20200101_000000_00_012.insv") == \
+        d / "LRV_20200101_000000_01_012.lrv"
+    assert PX.resolve_lrv(d / "LRV_20200101_000000_01_010.lrv") is None
+    assert PX.resolve_lrv(d / "clip.mp4") is None
+
+
+def test_lrv_eligibility_requires_equal_fps(tmp_path, monkeypatch):
+    d = tmp_path / "sess"
+    d.mkdir()
+    insv = d / "VID_20200101_000000_00_010.insv"
+    insv.write_bytes(b"x")
+    lrv = d / "LRV_20200101_000000_01_010.lrv"
+    lrv.write_bytes(b"x")
+    rates = {str(insv): Fraction(30000, 1001),
+             str(lrv): Fraction(30000, 1001)}
+    monkeypatch.setattr(
+        PX, "fps_ratio", lambda s, timeout=30.0: rates[str(s)])
+    monkeypatch.setattr(
+        PX, "total_source_frames",
+        lambda s, fps, timeout=30.0: 42313 if str(s) == str(lrv) else 42312)
+    path, n = PX.resolve_build_source(insv)
+    assert (path, n) == (str(lrv), 42313)  # one-longer LRV tolerated
+    rates[str(lrv)] = Fraction(30000, 1001 * 2)  # half-rate LRV session
+    assert PX.resolve_build_source(insv) == ("", 0)
+    lrv.unlink()  # missing LRV
+    rates[str(lrv)] = Fraction(30000, 1001)
+    assert PX.resolve_build_source(insv) == ("", 0)
+    lrv.write_bytes(b"x")
+
+    def boom(s, timeout=30.0):
+        raise ValueError("unprobed")
+    monkeypatch.setattr(PX, "fps_ratio", boom)
+    assert PX.resolve_build_source(insv) == ("", 0)  # unreadable: .insv path
+
+
+def test_insv_owns_grid_short_lrv_falls_back(tmp_path):
+    lrv = tmp_path / "b.lrv"
+    lrv.write_bytes(b"x")  # the LRV must exist: a vanished one serves .insv
+
+    def store(total, lrv_frames):
+        return PX.SegmentStore(root=tmp_path, fps=FPS, frames_per_segment=N,
+                               total_frames=total, pitch=-12.0,
+                               source="a.insv", lrv=str(lrv),
+                               lrv_frames=lrv_frames)
+    full = store(TOTAL, TOTAL + 1)  # one-longer LRV covers every span
+    assert all(full.source_for_segment(i) == str(lrv)
+               for i in range(full.count()))
+    assert full.expected(TOTAL // N)["built_from"]["kind"] == "lrv"
+    part = store(TOTAL, N)  # LRV covers segment 0 only
+    assert part.source_for_segment(0) == str(lrv)
+    assert part.source_for_segment(1) == "a.insv"
+    assert part.expected(0)["built_from"]["kind"] == "lrv"
+    assert part.expected(1)["built_from"]["kind"] == "insv"
+    assert store(TOTAL, 0).source_for_segment(0) == "a.insv"
+
+
+def test_garbage_lrv_falls_back_to_insv(tmp_path, monkeypatch):
+    """A truncated/still-copying sibling LRV must not block the proxy.
+
+    ffprobe on the garbage fails with CalledProcessError (check=True),
+    not ValueError -- before the fix that escaped resolve_build_source
+    and stopped a good .insv from opening its proxy at all.
+    """
+    d = tmp_path / "sess"
+    d.mkdir()
+    insv = d / "VID_20200101_000000_00_010.insv"
+    insv.write_bytes(b"x")
+    lrv = d / "LRV_20200101_000000_01_010.lrv"
+    lrv.write_bytes(b"\x00" * 4096)  # real garbage, not a monkeypatch
+    real_fps = PX.fps_ratio
+
+    def probe(s, timeout=30.0):
+        if str(s).endswith(".lrv"):
+            return real_fps(s, timeout=timeout)  # raises CalledProcessError
+        return FPS
+
+    monkeypatch.setattr(PX, "fps_ratio", probe)
+    assert PX.resolve_build_source(insv) == ("", 0)
+
+
+def test_vanished_lrv_falls_back_to_insv(tmp_path, monkeypatch):
+    """Segments/thumbs rebuild from the .insv when the LRV disappears."""
+    src = tmp_path / "src.insv"
+    src.write_bytes(b"x")
+    lrv = tmp_path / "thumb.lrv"
+    lrv.write_bytes(b"y")
+    root = tmp_path / "fp"
+    root.mkdir()
+    store = PX.SegmentStore(root=root, fps=FPS, frames_per_segment=N,
+                            total_frames=TOTAL, pitch=-12.0,
+                            source=str(src), lrv=str(lrv), lrv_frames=TOTAL)
+    assert store.source_for_segment(0) == str(lrv)
+    monkeypatch.setattr(PX, "fps_ratio",
+                        lambda s, timeout=30.0: FPS)
+    strip = PX.ThumbStrip(str(src), [1.0], -12.0,
+                          grab_fn=lambda *a, **k: b"jpg")
+    # ThumbStrip resolved the same LRV at open; point it at ours.
+    strip._lrv, strip._lrv_frames = str(lrv), TOTAL
+    assert strip.source_for_time(1.0) == str(lrv)
+    lrv.unlink()  # LRV vanishes mid-session
+    assert store.source_for_segment(0) == str(src)
+    assert strip.source_for_time(1.0) == str(src)
+
+
+def test_built_from_lives_in_sidecar_only(tmp_path):
+    src = tmp_path / "VID_20200101_000000_00_010.insv"
+    src.write_bytes(b"x")
+    lrv = tmp_path / "LRV_20200101_000000_01_010.lrv"
+    lrv.write_bytes(b"0123456789")
+    root = tmp_path / "fp"
+    root.mkdir()
+    store = PX.SegmentStore(root=root, fps=FPS, frames_per_segment=N,
+                            total_frames=TOTAL, pitch=-12.0,
+                            source=str(src), lrv=str(lrv), lrv_frames=TOTAL)
+    # Identity ignores built_from: the LRV-planned sidecar matches the
+    # .insv-planned one on pixels, so a sibling appearing or vanishing
+    # never orphans the segment (freshness decides, per sidecar).
+    assert PX.sidecar_matches(store.expected(0),
+                              store.expected_for(0, str(src)))
+    video, sidecar = store.seg_paths(0)
+    video.write_bytes(b"seg")
+    sidecar.write_text(json.dumps(store.expected(0)))
+    assert store.is_present(0) and 0 in store.scan()
+    lrv.write_bytes(b"0123456789-changed")  # LRV replaced: stale
+    assert not store.is_present(0) and 0 not in store.scan()
+    # ... but an .insv-built segment is accepted always ...
+    sidecar.write_text(json.dumps(store.expected_for(0, str(src))))
+    assert store.is_present(0)
+    # ... and so is an old sidecar without the field (reads as insv).
+    old = dict(store.expected_for(0, str(src)))
+    del old["built_from"]
+    sidecar.write_text(json.dumps(old))
+    assert store.is_present(0)
+    # LRV deleted: the LRV-planned sidecar misses (stale), while the
+    # .insv-built one still hits -- and the plan itself now serves .insv.
+    lrv_expected = store.expected(0)
+    assert lrv_expected["built_from"]["kind"] == "lrv"
+    lrv.unlink()
+    assert store.source_for_segment(0) == str(src)  # vanished: .insv serves
+    sidecar.write_text(json.dumps(lrv_expected))
+    assert not store.is_present(0)
+    sidecar.write_text(json.dumps(old))
+    assert store.is_present(0)
+
+
+def test_default_build_fn_uses_planned_source(tmp_path, monkeypatch):
+    src = tmp_path / "VID_20200101_000000_00_010.insv"
+    src.write_bytes(b"x")
+    lrv = tmp_path / "LRV_20200101_000000_01_010.lrv"
+    lrv.write_bytes(b"y")
+    root = tmp_path / "fp"
+    root.mkdir()
+    store = PX.SegmentStore(root=root, fps=FPS, frames_per_segment=N,
+                            total_frames=N, pitch=-12.0,
+                            source=str(src), lrv=str(lrv), lrv_frames=N)
+    cmds = []
+
+    class FakeProc:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def communicate(self):
+            return (b"ok", b"")
+
+    def fake_popen(cmd, **kw):
+        cmds.append(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr(PX.subprocess, "Popen", fake_popen)
+    PX.default_build_fn(store, 0)
+    assert cmds[0][cmds[0].index("--source") + 1] == str(lrv)
+    # The sidecar the child would publish records the LRV build source.
+    cached = json.loads(cmds[0][cmds[0].index("--sidecar-json") + 1])
+    assert cached["built_from"]["kind"] == "lrv"
+
+
+def test_build_proxy_routes_lrv_single_stream(monkeypatch):
+    seen = []
+
+    def fake_render(spec, dst, **kw):
+        seen.append((str(spec.source), kw))
+        return Path(dst)
+
+    monkeypatch.setattr("steadycut.core.pipeline.render_constant",
+                        fake_render)
+    from steadycut.job import build_proxy
+    build_proxy("clip.lrv", 0.0, 1.0, "o.mp4", -12.0)
+    build_proxy("clip.insv", 0.0, 1.0, "o.mp4", -12.0)
+    assert seen[0][1]["dual_stream"] is False
+    assert seen[1][1]["dual_stream"] is True
+
+
+def test_render_lrv_single_stream_dry_run():
+    from steadycut.render.reframe import ControlPoint, render
+    path = [ControlPoint(t=0.0, fov=100.0, pitch=-12.0)]
+    args = render("clip.lrv", "out.mp4", path, duration=1.0, start=0.0,
+                  dual_stream=False, dry_run=True)
+    assert "-vf" in args and "-filter_complex" not in args
+    assert not any("hstack" in a for a in args)
+    assert args.count("-i") == 1
+
+
+def test_thumb_strip_prefers_lrv_while_it_covers(tmp_path, monkeypatch):
+    src = tmp_path / "src.insv"
+    src.write_bytes(b"x")
+    lrv = tmp_path / "thumb.lrv"
+    lrv.write_bytes(b"y")  # the LRV must exist: a vanished one serves .insv
+    monkeypatch.setattr(PX, "resolve_build_source",
+                        lambda s: (str(lrv), 100))
+    monkeypatch.setattr(PX, "fps_ratio",
+                        lambda s, timeout=30.0: Fraction(10, 1))
+    strip = PX.ThumbStrip(str(src), [1.0, 5.0, 50.0], -12.0)
+    assert strip.source_for_time(1.0) == str(lrv)
+    assert strip.source_for_time(9.99) == str(lrv)
+    assert strip.source_for_time(50.0) == str(src)  # past LRV end
+    lrv.unlink()  # vanished mid-session: the .insv serves until reopen
+    assert strip.source_for_time(1.0) == str(src)
+    monkeypatch.setattr(PX, "resolve_build_source", lambda s: ("", 0))
+    plain = PX.ThumbStrip(str(src), [1.0], -12.0)
+    assert plain.source_for_time(1.0) == str(src)
+
+
+def _median(xs):
+    s = sorted(xs)
+    return s[len(s) // 2]
+
+
+@needs_media
+def test_lrv_proxy_perf_gate(tmp_path):
+    """Relative gate: LRV thumbs AND segments >=2x faster (median).
+
+    Cold + warm runs each (the first pays spawn/probe warmth, the rest
+    measure steady state); the median has to clear 2x on both. Reviewed
+    headroom is ~13x on thumbs, ~6x on 30 s segments, so 2x is the floor
+    that catches a planner accidentally serving the .insv.
+    """
+    lrv, _ = PX.resolve_build_source(REAL_INSV)
+    if not lrv:
+        pytest.skip("perf gate needs an eligible sibling LRV")
+    from steadycut.job import build_proxy
+    fps = PX.fps_ratio(REAL_INSV)
+    thumb_ts = {}
+    for name, src in (("insv", REAL_INSV), ("lrv", lrv)):
+        ts = []
+        for _ in range(3):
+            t0 = time.monotonic()
+            PX.grab_thumb(src, 5.0, -12.0)
+            ts.append(time.monotonic() - t0)
+        thumb_ts[name] = ts
+    n = PX.segment_frame_count(30.0, fps)
+    start = PX.frame_time(2 * n, fps)
+    dur = float(Fraction(n, 1) / fps)
+    seg_ts = {}
+    for name, src in (("insv", REAL_INSV), ("lrv", lrv)):
+        ts = []
+        for k in range(3):
+            dst = tmp_path / f"seg-{name}-{k}.mp4"
+            t0 = time.monotonic()
+            build_proxy(src, start, dur, str(dst), -12.0,
+                        nframes=n, video_only=True)
+            ts.append(time.monotonic() - t0)
+        seg_ts[name] = ts
+        assert len(_read_all(tmp_path / f"seg-{name}-0.mp4")) == n
+    t_med = {k: _median(v) for k, v in thumb_ts.items()}
+    s_med = {k: _median(v) for k, v in seg_ts.items()}
+    print(f"\nthumb median: insv {t_med['insv']:.2f}s "
+          f"lrv {t_med['lrv']:.2f}s")
+    print(f"segment median: insv {s_med['insv']:.2f}s "
+          f"lrv {s_med['lrv']:.2f}s")
+    assert t_med["insv"] >= 2 * t_med["lrv"]
+    assert s_med["insv"] >= 2 * s_med["lrv"]

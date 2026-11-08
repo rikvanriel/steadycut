@@ -135,7 +135,9 @@ def correlate(a: np.ndarray, b: np.ndarray,
 
 def render_constant(spec: ClipSpec, dst: str | Path,
                    preset: str = "ultrafast", frames: int | None = None,
-                   include_audio: bool = True) -> Path:
+                   include_audio: bool = True,
+                   dual_stream: bool | None = None,
+                   travel_yaw: float | None = None) -> Path:
     """Render with a fixed framing pitch: the no-correction baseline."""
     from steadycut.render.reframe import ControlPoint, render as _render
     _render(spec.source, dst, [ControlPoint(t=0.0, fov=spec.fov,
@@ -143,7 +145,8 @@ def render_constant(spec: ClipSpec, dst: str | Path,
             start=spec.start, duration=spec.duration, size=spec.size,
             preset=preset,
             geometry=spec.profile.lens if spec.profile is not None else None,
-            stitch=spec.stitch, frames=frames, include_audio=include_audio)
+            stitch=spec.stitch, frames=frames, include_audio=include_audio,
+            dual_stream=dual_stream, travel_yaw=travel_yaw)
     return Path(dst)
 
 

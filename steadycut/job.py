@@ -236,13 +236,21 @@ def build_proxy(source, start: float, dur: float, dst,
     `nframes` bounds the output to exactly that many video frames (segmented
     proxies: the segment IS the frame window). `video_only` drops the audio
     track (segmented proxies: AAC priming offsets every boundary by ~21 ms).
+
+    A sibling .lrv is pre-stitched single-stream dual-fisheye (one frame,
+    not two tracks): it renders WITHOUT the hstack (dual_stream False),
+    at the same travel_yaw as the .insv graph (both are profile-free here,
+    so both sit at 0). Final renders stay full-res; the LRV only feeds
+    scrub tooling.
     """
     from steadycut.core.pipeline import ClipSpec, render_constant
     spec = ClipSpec(source=source, start=start, duration=dur,
                     framing_pitch=pitch, fov=120.0, size=size,
                     profile=None, stitch=None)
+    dual_stream = not str(source).lower().endswith(".lrv")
     return render_constant(spec, dst, preset="ultrafast", frames=nframes,
-                           include_audio=not video_only)
+                           include_audio=not video_only,
+                           dual_stream=dual_stream)
 
 
 class OutputLocked(ValueError):

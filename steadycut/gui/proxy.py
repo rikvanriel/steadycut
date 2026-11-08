@@ -28,6 +28,11 @@ Layout (30 s segments, 720p everywhere):
   NEVER evicts, only demand (playhead / in-out segment) does. Pins cover
   the in/out window, the playhead segment, the preloaded next segment,
   and any segment with an open cap.
+- LRV-backed builds: a camera-original beside its pre-stitched single-stream
+  sibling renders segments and thumbs from the sibling (dual_stream=False,
+  same travel_yaw), ~6x/~13x faster measured. The .insv owns the grid;
+  eligibility is fps-rational equality, and built_from rides the sidecar
+  only, never the directory identity.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ import json
 import math
 import os
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -148,6 +154,64 @@ def total_source_frames(source: str | Path, fps: Fraction,
     return _NFRAMES_CACHE[key]
 
 
+# Sibling LRV: <stem>_00_<chap>.insv pairs with LRV<rest>_01_<chap>.lrv in
+# the same directory (the chapter number is kept, never just any LRV in
+# the dir). The VID_/LRV_ prefixes are the camera's own naming; matching
+# is on structure, and no recording name appears here (hygiene gate).
+_LRV_RE = re.compile(r"^VID_(.+)_00_(\d+)\.insv$")
+
+
+def resolve_lrv(source: str | Path) -> Path | None:
+    """Sibling pre-stitched LRV for a camera-original, or None.
+
+    Pure path logic plus an existence check: no probing, so a missing
+    sibling (short clips) or a non-conforming name resolves to None and
+    the .insv path serves unchanged.
+    """
+    m = _LRV_RE.match(Path(source).name)
+    if m is None:
+        return None
+    sib = Path(source).parent / f"LRV_{m.group(1)}_01_{m.group(2)}.lrv"
+    return sib if sib.is_file() else None
+
+
+def built_from_for(source: str | Path) -> dict:
+    """Build-source identity for a segment sidecar: what made the pixels."""
+    kind = "lrv" if str(source).lower().endswith(".lrv") else "insv"
+    try:
+        st = os.stat(source)
+        size, mtime = st.st_size, st.st_mtime
+    except OSError:
+        size, mtime = 0, 0.0
+    return {"kind": kind, "size": size, "mtime": mtime}
+
+
+def resolve_build_source(source: str | Path) -> tuple[str, int]:
+    """(LRV path, LRV frame count) preferred for `source`, or ("", 0).
+
+    Eligible means the LRV's fps rational EQUALS the .insv's: sessions
+    whose LRV runs at half rate never serve (the resolver still finds
+    them). Frame counts are not compared -- the .insv count owns the
+    grid, a one-longer LRV is tolerated, and spans past a short LRV's end
+    fall back to the .insv per segment. Anything unusable resolves to the
+    .insv path.
+    """
+    lrv = resolve_lrv(source)
+    if lrv is None:
+        return "", 0
+    try:
+        fps = fps_ratio(source)
+        if fps != fps_ratio(lrv):
+            return "", 0
+        return str(lrv), total_source_frames(lrv, fps)
+    except (ValueError, subprocess.SubprocessError, OSError):
+        # A truncated or still-copying sibling LRV fails the ffprobe
+        # (CalledProcessError from check=True); an unreadable one fails
+        # the stat. Either way the .insv path serves, so a bad LRV never
+        # stops a good .insv from opening its proxy.
+        return "", 0
+
+
 def segment_frame_count(seg_s: float = SEGMENT_S, fps: Fraction = Fraction(30000, 1001)) -> int:
     """Frames per segment: ONE constant for the whole source.
 
@@ -199,15 +263,19 @@ def seg_names(i: int) -> tuple[str, str]:
 
 
 def expected_sidecar(i: int, n: int, fps: Fraction, pitch: float,
-                     size: tuple[int, int], total_frames: int) -> dict:
+                     size: tuple[int, int], total_frames: int,
+                     built_from: dict | None = None) -> dict:
     """The sidecar a valid segment i must carry (the segment identity)."""
     start_frame, end_frame = segment_span(i, n, total_frames)
-    return {"version": SIDECAR_VERSION,
-            "span_frames": [start_frame, end_frame],
-            "frames": end_frame - start_frame,
-            "pitch": float(pitch),
-            "size": [int(size[0]), int(size[1])],
-            "fps": f"{fps.numerator}/{fps.denominator}"}
+    sidecar = {"version": SIDECAR_VERSION,
+               "span_frames": [start_frame, end_frame],
+               "frames": end_frame - start_frame,
+               "pitch": float(pitch),
+               "size": [int(size[0]), int(size[1])],
+               "fps": f"{fps.numerator}/{fps.denominator}"}
+    if built_from is not None:
+        sidecar["built_from"] = dict(built_from)
+    return sidecar
 
 
 def sidecar_matches(sidecar: dict, want: dict) -> bool:
@@ -217,6 +285,9 @@ def sidecar_matches(sidecar: dict, want: dict) -> bool:
     invalidates the file instead of mixing two segment sets on one
     timeline. The version pins the schema; `frames` is informational
     (the last segment is clipped, so the count alone never identifies).
+    `built_from` is deliberately NOT in the key: an LRV appearing or
+    disappearing must not orphan existing segments (freshness is checked
+    separately, per sidecar, in sidecar_source_fresh).
     """
     if not isinstance(sidecar, dict):
         return False
@@ -228,6 +299,25 @@ def sidecar_matches(sidecar: dict, want: dict) -> bool:
     return True
 
 
+def sidecar_source_fresh(sidecar: dict,
+                         lrv_stat: tuple[int, float] | None) -> bool:
+    """True when a segment's recorded build source still stands.
+
+    An .insv-built segment is accepted always, and so is an old sidecar
+    without the field (it reads as kind=insv, so existing caches survive
+    a sibling LRV appearing). An LRV-built segment holds only while the
+    LRV's size+mtime still match the recording: a replaced or removed
+    LRV rebuilds from the .insv instead of serving stale pixels.
+    """
+    built = sidecar.get("built_from") or {}
+    if built.get("kind") != "lrv":
+        return True
+    if lrv_stat is None:
+        return False
+    size, mtime = lrv_stat
+    return built.get("size") == size and float(built.get("mtime", -1)) == mtime
+
+
 @dataclass
 class SegmentStore:
     """One per-source cache dir: frame-grid planner + demand/evict policy.
@@ -235,6 +325,9 @@ class SegmentStore:
     `root` is <cache>/<manifest fingerprint>/; `manifest` is the frozen
     proxy manifest (source identity, camera, stitch, renderer) that names
     the dir. Freshness is per-segment sidecars, not the manifest.
+    `source` is the canonical file (the .insv: it owns the frame grid);
+    `lrv`/`lrv_frames` name the preferred pre-stitched build source when
+    a sibling LRV is eligible ("" / 0: the .insv serves every segment).
     """
 
     root: Path
@@ -245,6 +338,8 @@ class SegmentStore:
     size: tuple[int, int] = SEGMENT_SIZE
     cap_bytes: int = DEFAULT_CAP_BYTES
     source: str = ""
+    lrv: str = ""
+    lrv_frames: int = 0
 
     def seg_paths(self, i: int) -> tuple[Path, Path]:
         """(video, sidecar) paths for segment i."""
@@ -255,10 +350,60 @@ class SegmentStore:
         """How many segments cover this source."""
         return n_segments(self.total_frames, self.frames_per_segment)
 
+    def source_for_segment(self, i: int) -> str:
+        """Build source for segment i: the LRV when it covers the span.
+
+        The .insv count owns the grid, so a short LRV only serves the
+        segments inside its own frame count; spans past its end fall back
+        to the .insv. A one-longer LRV covers every span (tolerated).
+        An LRV that vanished mid-session falls back too: the plan is
+        frozen at open but the file is live, so a missing LRV serves the
+        .insv until reopen instead of handing the rebuild a dead path.
+        """
+        if self.lrv and self.lrv_frames \
+                and os.path.isfile(self.lrv):
+            _, end = segment_span(i, self.frames_per_segment,
+                                  self.total_frames)
+            if end <= self.lrv_frames:
+                return self.lrv
+        return self.source
+
+    def expected_for(self, i: int, src: str | Path) -> dict:
+        """The sidecar segment i carries when built from `src`."""
+        return expected_sidecar(i, self.frames_per_segment, self.fps,
+                                self.pitch, self.size, self.total_frames,
+                                built_from=built_from_for(src))
+
     def expected(self, i: int) -> dict:
         """The sidecar segment i must carry to count as present."""
-        return expected_sidecar(i, self.frames_per_segment, self.fps,
-                                self.pitch, self.size, self.total_frames)
+        return self.expected_for(i, self.source_for_segment(i))
+
+    def _lrv_stat(self) -> tuple[int, float] | None:
+        """(size, mtime) of the LRV we'd build from now, or None.
+
+        The candidate is the sibling resolved at open (a stat, not a
+        probe); the LRV set is fixed for the store's lifetime, so an LRV
+        appearing mid-session takes effect on reopen, never mid-stream.
+        An LRV vanishing mid-session is the other direction: the
+        per-segment/per-time source pick falls back to the .insv (the
+        stat here goes None, so LRV-built sidecars read stale), and no
+        rebuild is ever handed the missing path. A directly-opened .lrv
+        is its own candidate.
+        """
+        cand = self.lrv
+        if not cand and str(self.source).lower().endswith(".lrv"):
+            cand = str(self.source)
+        if not cand:
+            return None
+        try:
+            st = os.stat(cand)
+        except OSError:
+            return None
+        return (st.st_size, st.st_mtime)
+
+    def _fresh(self, cached: dict) -> bool:
+        """True when a sidecar's recorded build source still stands."""
+        return sidecar_source_fresh(cached, self._lrv_stat())
 
     def is_present(self, i: int) -> bool:
         """True when segment i is on disk AND matches this segment set."""
@@ -272,7 +417,8 @@ class SegmentStore:
             cached = json.loads(sidecar.read_text())
         except (OSError, ValueError):
             return False
-        return sidecar_matches(cached, self.expected(i))
+        return sidecar_matches(cached, self.expected(i)) \
+            and self._fresh(cached)
 
     def scan(self) -> dict[int, dict]:
         """Index from the directory listing: {i: sidecar} for valid files.
@@ -295,6 +441,7 @@ class SegmentStore:
             except (OSError, ValueError):
                 continue
             if sidecar_matches(cached, self.expected(i)) \
+                    and self._fresh(cached) \
                     and self.seg_paths(i)[0].exists():
                 found[i] = cached
         return found
@@ -422,7 +569,11 @@ class SegmentStore:
                     dst, sidecar = self.seg_paths(0)
                     self.root.mkdir(parents=True, exist_ok=True)
                     os.replace(legacy, dst)
-                    sidecar.write_text(json.dumps(self.expected(0), indent=1))
+                    # The legacy file is an .insv render: label it as built
+                    # from the canonical source, whatever the planner would
+                    # prefer today (an LRV appearing must not orphan it).
+                    sidecar.write_text(json.dumps(
+                        self.expected_for(0, self.source), indent=1))
                     adopted = True
         except (OSError, ValueError, subprocess.CalledProcessError,
                 subprocess.TimeoutExpired):
@@ -690,6 +841,9 @@ def default_build_fn(store: SegmentStore, i: int,
     measured wall (a + b*dur), and a crashed ffmpeg can never take the
     GUI thread with it. Runs at nice +10 so fill doesn't stutter the
     UI's own decode; the child owns its process group for cancel.
+    The build source is the planner's per-segment pick (eligible LRV
+    when it covers the span, else the .insv), and the sidecar records
+    which file the pixels came from.
     """
     start_frame, end_frame = segment_span(i, store.frames_per_segment,
                                           store.total_frames)
@@ -698,7 +852,7 @@ def default_build_fn(store: SegmentStore, i: int,
     store.root.mkdir(parents=True, exist_ok=True)
     tmp = video.with_name(f"{TMP_PREFIX}{video.name}")
     cmd = [sys.executable, "-m", "steadycut.gui.proxy_build",
-           "--source", str(store.source),
+           "--source", str(store.source_for_segment(i)),
            "--frame-start", str(start_frame),
            "--nframes", str(count),
            "--fps", f"{store.fps.numerator}/{store.fps.denominator}",
@@ -734,13 +888,19 @@ def open_store(root: str | Path, source: str | Path, pitch: float,
                size: tuple[int, int] = SEGMENT_SIZE,
                seg_s: float = SEGMENT_S,
                cap_bytes: int = DEFAULT_CAP_BYTES) -> SegmentStore:
-    """Open (or adopt) the per-source cache dir: probe once, plan the grid."""
+    """Open (or adopt) the per-source cache dir: probe once, plan the grid.
+
+    The grid (fps, frame count) always comes from the canonical source;
+    an eligible sibling LRV only picks the build pixels, per segment.
+    """
     fps = fps_ratio(source)
     n = segment_frame_count(seg_s, fps)
     total = total_source_frames(source, fps)
+    lrv, lrv_frames = resolve_build_source(source)
     store = SegmentStore(root=Path(root), fps=fps, frames_per_segment=n,
                          total_frames=total, pitch=float(pitch),
-                         size=tuple(size), cap_bytes=cap_bytes)
+                         size=tuple(size), cap_bytes=cap_bytes,
+                         lrv=lrv, lrv_frames=lrv_frames)
     store.source = str(source)
     store.root.mkdir(parents=True, exist_ok=True)
     store.clean_temps()
@@ -772,6 +932,10 @@ class ThumbStrip:
         self.index = Path(index) if index is not None else None
         self.grab_fn = grab_fn or grab_thumb
         self.workers = max(1, workers)
+        # Preferred grab pixels: the eligible sibling LRV when one serves
+        # this source (resolved once; per-thumb fallback below). No extra
+        # probes when no sibling exists: the resolver is path-only first.
+        self._lrv, self._lrv_frames = resolve_build_source(source)
         self.events: queue.Queue = queue.Queue()
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
@@ -818,6 +982,23 @@ class ThumbStrip:
                 with self._lock:
                     self.cells[float(t)] = bytes(buf)
 
+    def source_for_time(self, t: float) -> str:
+        """Grab source for a thumb at `t`: the LRV while it covers `t`.
+
+        Past the LRV's end the .insv serves (same per-segment fallback as
+        the segment planner, at thumb granularity). An LRV that vanished
+        mid-session falls back the same way until reopen.
+        """
+        if self._lrv and self._lrv_frames \
+                and os.path.isfile(self._lrv):
+            try:
+                fps = fps_ratio(self.source)
+            except ValueError:
+                return self.source
+            if t < self._lrv_frames / float(fps):
+                return self._lrv
+        return self.source
+
     def start(self) -> None:
         """Grab missing thumbs, streaming; cached cells emit immediately."""
         with self._lock:
@@ -853,7 +1034,8 @@ class ThumbStrip:
             except queue.Empty:
                 return
             try:
-                jpg = self.grab_fn(self.source, t, self.pitch, self.size)
+                jpg = self.grab_fn(self.source_for_time(t), t, self.pitch,
+                                   self.size)
             except Exception as exc:
                 self.events.put(("thumb-error", t, f"{exc}"))
                 continue
