@@ -24,6 +24,31 @@ def test_bare_invocation_opens_the_gui(monkeypatch) -> None:
     assert launched == [True]
 
 
+def test_source_without_window_opens_gui_on_that_media(monkeypatch) -> None:
+    import steadycut.steadycut as S
+    seen = []
+    monkeypatch.setattr(S, "launch_gui",
+                        lambda *a: seen.append(a) or 0)
+    assert main(["f.insv"]) == 0
+    assert seen == [("f.insv", None)]
+    assert main(["f.insv", "--out", "o.mp4"]) == 0
+    assert seen[-1] == ("f.insv", "o.mp4")
+
+
+def test_half_window_refuses_instead_of_opening_gui(monkeypatch,
+                                                    capsys) -> None:
+    # Only a sourceless window opens the picker: --start without --dur
+    # (or vice versa) is a half window, refused with the usage.
+    import steadycut.steadycut as S
+    seen = []
+    monkeypatch.setattr(S, "launch_gui",
+                        lambda *a: seen.append(a) or 0)
+    assert main(["f.insv", "--start", "10"]) == 2
+    assert main(["f.insv", "--dur", "5"]) == 2
+    assert seen == []  # never launched
+    assert "both --start and --dur" in capsys.readouterr().out
+
+
 def test_gui_main_refuses_headless_without_aborting(monkeypatch) -> None:
     # With [gui] installed and no display, QApplication aborts (rc 134
     # core dump). The entry point refuses cleanly instead.

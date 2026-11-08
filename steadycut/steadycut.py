@@ -113,18 +113,25 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def launch_gui() -> int:
+def launch_gui(source: str | None = None,
+               out: str | None = None) -> int:
     """Open the clip-picker GUI. Imported lazily so the CLI never needs Qt.
 
     The [gui] extra owns PySide6; without it this is a clean refusal
-    naming the install, not a traceback.
+    naming the install, not a traceback. A source path opens with that
+    media loaded.
     """
     try:
         from steadycut.gui.app import main as gui_main
     except ImportError:
         return refuse("the GUI needs the optional [gui] extra",
                       "pip install steadycut[gui], or launch steadycut-gui")
-    return gui_main()
+    argv: list[str] = []
+    if source is not None:
+        argv += [source]
+        if out is not None:
+            argv += ["--out", out]
+    return gui_main(argv)
 
 
 def refuse(msg: str, hint: str) -> int:
@@ -223,6 +230,16 @@ def main(argv=None) -> int:
         # Bare `steadycut`: no window, no job, nothing to validate --
         # open the clip picker instead of refusing.
         return launch_gui()
+    if a.source is not None and a.start is None and a.dur is None \
+            and a.job is None and not a.check:
+        # Source but no window: open the picker on that media instead of
+        # refusing -- finding the timestamps IS the GUI's job.
+        return launch_gui(a.source, a.out)
+    if (a.source is not None and (a.start is None) != (a.dur is None)
+            and a.job is None and not a.check):
+        return refuse("need both --start and --dur (or neither, "
+                      "to open the GUI picker)",
+                      "steadycut SOURCE --start S --dur D [--out clip.mp4]")
     if a.source is None or a.start is None or a.dur is None:
         return refuse("need source --start --dur (or a --job envelope "
                       "supplying them)",
