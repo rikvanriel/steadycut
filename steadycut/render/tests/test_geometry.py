@@ -62,11 +62,12 @@ def test_explicit_kwargs_override_the_geometry() -> None:
     fg = _filtergraph(geometry=X4.lens, input_projection="fisheye",
                       input_fov=200.0, travel_yaw=180.0)
     assert "input=fisheye" in fg and "id_fov=200.0" in fg
-    # travel_yaw forces the two-stage sphere reorientation.
+    # travel_yaw folds into the view yaw: a single flat pass, no sphere stage.
     args = render("dummy.insv", "out.mp4", [ControlPoint(t=0.0, fov=100.0)],
                   geometry=X4.lens, travel_yaw=180.0, dry_run=True)
-    fg2 = next(a for a in args if "equirect" in a and "v360" in a)
-    assert "yaw=-180.0" in fg2
+    fg2 = next(a for a in args if "v360@view" in a)
+    assert "output=equirect" not in fg2
+    assert ":yaw=-180.0:" in fg2
 
 
 def test_travel_yaw_field_is_wired_from_the_geometry() -> None:
@@ -74,8 +75,9 @@ def test_travel_yaw_field_is_wired_from_the_geometry() -> None:
                      stack_order="rear_first", travel_yaw=180.0)
     args = render("dummy.insv", "out.mp4", [ControlPoint(t=0.0, fov=100.0)],
                   geometry=g, dry_run=True)
-    stage_one = next(a for a in args if "equirect" in a and "v360" in a)
-    assert "yaw=-180.0" in stage_one
+    flat = next(a for a in args if "v360@view" in a)
+    assert "output=equirect" not in flat
+    assert ":yaw=-180.0:" in flat
 
 
 def test_resolve_input_priority() -> None:

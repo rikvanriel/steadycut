@@ -332,9 +332,10 @@ def render(
     `travel_yaw` is where the direction of travel sits in the sphere, in v360
     coordinates, for a camera NOT mounted the usual way round. It defaults to 0
     because the fisheye stack order already puts travel at yaw 0 for a normally
-    mounted camera. Set it to 180 for a camera mounted the other way; the sphere
-    is then reoriented so that framing and tilt behave the same either way. See
-    the note in the body for why the sphere is rotated rather than the view.
+    mounted camera. Set it to 180 for a camera mounted the other way; the view
+    yaw is then offset by -travel_yaw so the framing follows the mount. Pitch
+    works at every yaw including +-180 (re-measured 71.3 vs 45.9 mean pixel
+    diff at yaw 180 vs 0 on ffmpeg 8.1.3), so no sphere reorientation is needed.
 
     Returns the ffmpeg argument list, so a caller can inspect or re-run the
     exact command.  With dry_run set nothing is executed.
@@ -352,6 +353,15 @@ def render(
     width, height = size
     proj, fov, dual, tyaw, order = resolve_input(
         geometry, input_projection, input_fov, dual_stream, travel_yaw)
+
+    # Fold the mount offset into the view yaw, once, up front: the flat stage
+    # below then reads the unrotated sphere directly and there is no second
+    # equirect pass. The sign is measured, not guessed: at travel_yaw=90 a -90
+    # view offset reproduces the old two-pass render (mean diff 4.5, at the 4.0
+    # equirect-resample floor) while +90 lands 54.9 away, looking the opposite
+    # way. travel_yaw=0 skips this, so that path renders bit-identical.
+    if tyaw:
+        path = [replace(p, yaw=wrap_deg(p.yaw - tyaw)) for p in path]
 
     # Snap the seek to the source's frame grid and re-reference the path to it.
     #
@@ -481,33 +491,18 @@ def render(
         f":yaw={wrap_deg(first.yaw)}:pitch={wrap_deg(first.pitch)}:roll={wrap_deg(first.roll)}"
         # reset_rot=1 is REQUIRED here, not cosmetic. v360's process_command()
         # zeroes yaw, pitch and roll on EVERY sendcmd command unless reset_rot is
-        # set, so with the default a command file that changes more than one angle
-        # per timestamp has each value wiped by the command that follows it, and
-        # the result depends on which command lands last. Left at the default, a
-        # pitch correction never survives alongside a yaw or roll one.
+        # set, so without it each command composes relatively onto the running
+        # orientation instead of replacing it absolutely (measured: histories
+        # converge to 0.00 with reset_rot, diverge by 56.15 without). Left at
+        # the default, a multi-angle path drifts with its own history.
         f":reset_rot=1:interp=lanczos"
     )
 
-    if tyaw:
-        # Rotate the SPHERE so the direction of travel lands at yaw 0, rather
-        # than offsetting the view. The view offset cannot work: if the camera is
-        # mounted the other way round, travel sits at yaw 180, and that is exactly
-        # where v360's pitch is degenerate, so offsetting the view would leave the
-        # one direction we care about permanently unable to tilt. Reorienting the
-        # sphere first means the framing yaw stays near 0 and tilt keeps working.
-        #
-        # Two passes rather than one, because a single v360 call cannot both
-        # reorient the sphere and project from it. travel_yaw is 0 for a camera
-        # mounted the usual way, so the single-pass path below is the normal one
-        # and this costs nothing unless it is actually needed.
-        stage_one = (
-            f"v360=input={proj}:output=equirect:id_fov={fov}"
-            f":w={sphere_size[0]}:h={sphere_size[1]}"
-            f":yaw={wrap_deg(-tyaw)}:interp=lanczos"
-        )
-        stage_two = reproject.replace(f"input={proj}:", "input=equirect:")
-        stage_two = stage_two.replace(f"id_fov={fov}", "id_fov=0")
-        reproject = f"{stage_one}[s];[s]{stage_two}"
+    # No sphere-rotation pass: the folded view yaw above already points the
+    # framing at the direction of travel, and pitch works at yaw +-180 (71.3
+    # vs 45.9 mean pixel diff at 180 vs 0), so the old two-pass reorientation
+    # bought nothing but a full extra equirect render on every travel_yaw!=0
+    # clip. Deleted, not moved.
 
     if dual:
         # The two fisheye tracks sit in the same container at the same size;
@@ -516,16 +511,14 @@ def render(
         # The two fisheye streams are stacked in the order the stitcher expects:
         # rear lens first, front lens second (the profile's stack_order). With
         # the source order (0 then 1) the sphere comes out rotated 180 degrees,
-        # which puts the direction of travel at yaw 180 - exactly where v360's
-        # pitch is degenerate, so the view cannot be tilted up or down at all.
-        # Measured: pitch has a full effect at yaw 0 (mean pixel difference
-        # 70.5), partial at 170 (39.3) and 179 (26.6), and NONE at exactly
-        # +-180 (0.25). Swapping the inputs puts forward at yaw 0 and the
-        # bicycle is visible when looking down.
+        # so the direction of travel sits at yaw 180 and a reversed mount needs
+        # travel_yaw=180 to bring it back. Swapping the inputs puts forward at
+        # yaw 0 and the bicycle is visible when looking down. (Pitch works at
+        # yaw +-180 -- re-measured 71.3 vs 45.9 -- so the swap is about framing,
+        # not about escaping a degeneracy.)
         if use_blend:
             # Two-pass blend stitch: per-lens equirect on [s], then the
-            # existing flat stage reads the sphere (input=equirect, same
-            # structure as the travel_yaw path below).
+            # existing flat stage reads the sphere (input=equirect).
             stage_two = reproject.replace(f"input={proj}:", "input=equirect:")
             stage_two = stage_two.replace(f"id_fov={fov}", "id_fov=0")
             filtergraph = f"{sfg};[s]{stage_two}[v]"
